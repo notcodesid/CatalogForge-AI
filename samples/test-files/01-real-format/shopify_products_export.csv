@@ -1,0 +1,9 @@
+Handle,Title,Body (HTML),Vendor,Product Category,Type,Tags,Published,Option1 Name,Option1 Value,Option2 Name,Option2 Value,Variant SKU,Variant Grams,Variant Inventory Qty,Variant Price,Variant Compare At Price,Variant Requires Shipping,Variant Taxable,Image Src,Image Position,Image Alt Text,Status
+terracotta-planter,Terracotta Planter,<p>Classic terracotta planter with drainage hole. Frost-resistant.</p>,Green Fingers Ltd,Home & Garden > Lawn & Garden > Gardening > Pots & Planters,Planters,"terracotta, outdoor, planter",TRUE,Size,20 cm,,,TC-PL-20,1800,14,24.99,,TRUE,TRUE,https://cdn.shopify.com/s/files/1/0000/0001/products/tc-pl-20.jpg,1,Terracotta planter 20 cm,active
+terracotta-planter,,,,,,,,,30 cm,,,TC-PL-30,3100,8,34.99,39.99,TRUE,TRUE,https://cdn.shopify.com/s/files/1/0000/0001/products/tc-pl-30.jpg,2,,
+terracotta-planter,,,,,,,,,40 cm,,,TC-PL-40,5200,0,39.90,,TRUE,TRUE,,,,
+linen-cushion-cover,Linen Cushion Cover,"<p>Stonewashed linen cushion cover, 45 x 45 cm. Zip closure.</p><p>Machine washable at 30°C.</p>",Casa Nord,Home & Garden > Decor > Throw Pillows,Cushions,"linen, cushion",TRUE,Color,Sage,Size,45x45,LCC-SAGE-45,300,22,29.00,,TRUE,TRUE,https://cdn.shopify.com/s/files/1/0000/0001/products/lcc-sage.jpg,1,,active
+linen-cushion-cover,,,,,,,,,Sage,,50x50,LCC-SAGE-50,350,10,32.00,,TRUE,TRUE,,,,
+linen-cushion-cover,,,,,,,,,Oat,,45x45,LCC-OAT-45,300,0,29.00,,TRUE,TRUE,https://cdn.shopify.com/s/files/1/0000/0001/products/lcc-oat.jpg,2,,
+linen-cushion-cover,,,,,,,,,,,,,,,,,,,https://cdn.shopify.com/s/files/1/0000/0001/products/lcc-detail.jpg,3,Linen detail,
+enamel-watering-can,Enamel Watering Can,"Enamel watering can, 2 litres.",Green Fingers Ltd,,Garden Tools,,FALSE,Title,Default Title,,,WC-EN-2,950,5,27.50,,TRUE,TRUE,https://cdn.shopify.com/s/files/1/0000/0001/products/wc-en-2.jpg,1,,draft

@@ -1,0 +1,8 @@
+﻿ID,Type,SKU,Name,Published,Is featured?,Visibility in catalog,Short description,Description,Tax status,In stock?,Stock,Weight (kg),Length (cm),Width (cm),Height (cm),Sale price,Regular price,Categories,Tags,Images,Parent,Attribute 1 name,Attribute 1 value(s),Attribute 1 visible,Attribute 2 name,Attribute 2 value(s),Attribute 2 visible
+101,variable,MUG-STN,Stoneware Mug,1,0,visible,Handmade stoneware mug.,"<p>Each mug is thrown by hand, so sizes vary slightly.</p>
+<p>Not suitable for the microwave.</p>",taxable,1,,,,,,,,Kitchen > Mugs,"handmade, stoneware",https://shop.example.com/wp-content/uploads/2026/01/mug-stn.jpg,,Colour,"Speckled White, Ocean Blue",1,Size,"Small, Large",1
+102,variation,MUG-STN-WH-S,"Stoneware Mug - Speckled White, Small",1,0,visible,,,taxable,1,12,0.35,,,,,18,,,,id:101,Colour,Speckled White,,Size,Small,
+103,variation,MUG-STN-WH-L,"Stoneware Mug - Speckled White, Large",1,0,visible,,,taxable,1,4,0.45,,,,19.5,22,,,,id:101,Colour,Speckled White,,Size,Large,
+104,variation,MUG-STN-BL-S,"Stoneware Mug - Ocean Blue, Small",1,0,visible,,,taxable,0,0,0.35,,,,,18,,,,id:101,Colour,Ocean Blue,,Size,Small,
+105,simple,SEED-TRAY-24,"Seed Starter Tray, 24 cells",1,0,visible,Reusable seed tray.,Reusable plastic seed tray with 24 cells and a clear lid.,taxable,1,40,0.15,35,24,6,,6.99,Garden > Seeds & Propagation,,"https://shop.example.com/wp-content/uploads/2026/01/seed-tray.jpg, https://shop.example.com/wp-content/uploads/2026/01/seed-tray-lid.jpg",,,,,,,
+106,simple,,Gift Card,1,0,hidden,,,none,1,,,,,,,25,Gifts,,,,,,,,,
