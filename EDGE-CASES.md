@@ -42,11 +42,26 @@
 - **What the app does:** Match photos to products by filename (SKU). Unmatched photos are listed on the import so the merchant can assign them by hand. They don't stop the import
 - **Status:** Not handled yet
 
+### Rows for one product are split up or out of order
+- **What happens:** The 20 cm and 30 cm sizes of the same planter are on row 14 and row 212
+- **What the app does:** Read the whole sheet first, then group rows by a product key (parent SKU, or the cleaned-up name with sizes and colours removed), not by row position. If the grouping is only a guess from similar names, the product goes to Needs review
+- **Status:** Not handled yet
+
+### Typos and text in other languages
+- **What happens:** Colours with typos like "terracota", and some rows written in German
+- **What the app does:** Code fixes known values like colours against a list ("terracota" → "terracotta"). The AI writes the English output from the German text. If a value can't be matched clearly, the product goes to Needs review
+- **Status:** Not handled yet
+
 ## AI problems
 
 ### AI adds a claim that isn’t in the source
 - **What happens:** The AI writes "organic" or "dishwasher-safe" when the supplier never said that
 - **What the app does:** The AI must give the exact source text for every claim. Code checks that text is really in the sheet. If it isn't, the claim is removed and the product goes to Needs review
+- **Status:** Not handled yet
+
+### AI makes a claim stronger than the source
+- **What happens:** The supplier wrote "frost-resistant (not frost-proof, bring indoors below 0 °C)" and the AI writes "frost-proof"
+- **What the app does:** The prompt tells the AI to keep words like "not" and copy care notes as written. Code also checks whether the source says "not" before a claim. If it does, the claim is removed and the product goes to Needs review
 - **Status:** Not handled yet
 
 ### AI returns broken JSON
