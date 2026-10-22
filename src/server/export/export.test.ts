@@ -33,6 +33,9 @@ async function download(options: Partial<Parameters<typeof exportCatalog>[1]> = 
 
 const BOM = String.fromCharCode(0xfeff);
 const parseCsv = (text: string) => Papa.parse<Record<string, string>>(text.replace(BOM, ""), { header: true, skipEmptyLines: true });
+// The first bytes of the file as the download sends them (the route encodes the text as UTF-8)
+const firstBytes = (text: string, count: number) => [...new TextEncoder().encode(text).slice(0, count)];
+const UTF8_BOM = [0xef, 0xbb, 0xbf];
 
 // A small catalog: an approved planter (3 sizes, 4 photos, a German translation with one field that failed a
 // check), an approved bench with a formula in its title, a product that's only ready, and a deleted one
@@ -135,7 +138,13 @@ describe("export", () => {
     const file = await download();
     expect(file).toMatchObject({ contentType: "text/csv; charset=utf-8", fileName: "catalog-approved-en-2026-10-22.csv" });
     // A byte order mark, so Excel reads umlauts and accents right
-    expect(file.text.startsWith(BOM)).toBe(true);
+    expect(firstBytes(file.text, 3)).toEqual(UTF8_BOM);
+    // The first product comes right after the header: a blank line would read as an empty product
+    const lines = file.text.split("\r\n");
+    expect(lines[0]).toBe(BOM + CSV_COLUMNS.join(","));
+    expect(lines[1]).toMatch(/^hand-thrown-terracotta-planter,Hand-thrown Terracotta Planter,approved,/);
+    expect(lines.slice(0, -1)).not.toContain("");
+    expect(file.text.endsWith("\r\n")).toBe(true);
 
     const { data, meta, errors } = parseCsv(file.text);
     expect(errors).toEqual([]);
@@ -181,6 +190,8 @@ describe("export", () => {
     const { photoUrl } = await seedCatalog();
     const file = await download({ format: "json" });
     expect(file).toMatchObject({ contentType: "application/json; charset=utf-8", fileName: "catalog-approved-en-2026-10-22.json" });
+    // No byte order mark in JSON
+    expect(file.text.startsWith("[\n  {")).toBe(true);
     const exported = JSON.parse(file.text);
     expect(exported).toHaveLength(2);
 
@@ -238,8 +249,12 @@ describe("export", () => {
     const { photoUrl } = await seedCatalog();
     const file = await download({ format: "shopify", vendor: "My Shop" });
     expect(file.fileName).toBe("catalog-shopify-approved-en-2026-10-22.csv");
-    // No byte order mark: Shopify's importer wants the header as it is
-    expect(file.text.startsWith("Handle,Title,Body (HTML),Vendor")).toBe(true);
+    // A byte order mark like our CSV (Excel shows "×", "ä" and "é" right), then the header and straight away the first row
+    expect(firstBytes(file.text, 3)).toEqual(UTF8_BOM);
+    const lines = file.text.split("\r\n");
+    expect(lines[0]).toBe(BOM + SHOPIFY_COLUMNS.join(","));
+    expect(lines[1]).toMatch(/^hand-thrown-terracotta-planter,Hand-thrown Terracotta Planter,/);
+    expect(lines.slice(0, -1)).not.toContain("");
 
     const { data, meta, errors } = parseCsv(file.text);
     expect(errors).toEqual([]);
@@ -333,7 +348,8 @@ describe("export", () => {
   });
 
   it("writes an empty catalog as a header or an empty list", async () => {
-    expect(parseCsv((await download()).text).meta.fields).toEqual([...CSV_COLUMNS]);
-    expect(JSON.parse((await download({ format: "json" })).text)).toEqual([]);
+    expect((await download()).text).toBe(`${BOM}${CSV_COLUMNS.join(",")}\r\n`);
+    expect((await download({ format: "shopify" })).text).toBe(`${BOM}${SHOPIFY_COLUMNS.join(",")}\r\n`);
+    expect((await download({ format: "json" })).text).toBe("[]\n");
   });
 });

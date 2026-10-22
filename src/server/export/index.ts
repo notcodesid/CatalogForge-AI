@@ -35,12 +35,17 @@ async function* allPages(db: Db, status: ExportStatus, first: ExportProduct[]) {
   }
 }
 
+// Excel reads a UTF-8 CSV correctly (umlauts, accents, "×") only with a byte order mark at the start.
+// Both CSVs (ours and Shopify's) get one, JSON doesn't
+const BOM = String.fromCharCode(0xfeff);
+
 // CSV in pieces: the header first, then each page of rows. Cells that a spreadsheet would run as a formula
 // ("=HYPERLINK(...)" from a supplier's sheet) get a ' in front, so opening the file is safe
-async function* csvChunks<C extends string>(columns: readonly C[], pages: AsyncIterable<ExportProduct[]>, toRows: (item: ExportProduct) => Partial<Record<C, string>>[], bom: boolean) {
+async function* csvChunks<C extends string>(columns: readonly C[], pages: AsyncIterable<ExportProduct[]>, toRows: (item: ExportProduct) => Partial<Record<C, string>>[]) {
   const options = { escapeFormulae: true, newline: "\r\n" };
-  // Excel reads a UTF-8 CSV correctly (umlauts, accents) only with a byte order mark. Shopify's file goes without
-  yield (bom ? String.fromCharCode(0xfeff) : "") + Papa.unparse({ fields: [...columns], data: [] }, options);
+  // The header as a plain row, with no line break after it: each page starts with its own. (Papa ends a header
+  // with no data under it with a line break, which left a blank line that some importers read as an empty product)
+  yield BOM + Papa.unparse([[...columns]], options);
   for await (const page of pages) {
     const data = page.flatMap(toRows).map((row) => columns.map((c) => row[c] ?? ""));
     if (data.length) yield `\r\n${Papa.unparse(data, { ...options, header: false })}`;
@@ -82,12 +87,12 @@ export async function exportCatalog(db: Db, options: ExportOptions & { origin: s
     return {
       contentType: "text/csv; charset=utf-8",
       fileName: `${name}.csv`,
-      chunks: csvChunks(SHOPIFY_COLUMNS, pages, (item) => toShopifyRows(item, language, origin, options.vendor), false),
+      chunks: csvChunks(SHOPIFY_COLUMNS, pages, (item) => toShopifyRows(item, language, origin, options.vendor)),
     };
   }
   return {
     contentType: "text/csv; charset=utf-8",
     fileName: `${name}.csv`,
-    chunks: csvChunks(CSV_COLUMNS, pages, (item) => toCsvRows(item, language, origin), true),
+    chunks: csvChunks(CSV_COLUMNS, pages, (item) => toCsvRows(item, language, origin)),
   };
 }
