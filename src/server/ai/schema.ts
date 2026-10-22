@@ -12,6 +12,8 @@ const productDraftSchema = z.object({
   category: z.string().max(200),
   tags: z.array(z.string().max(60)).max(20),
   attributes: z.record(z.string(), z.string().max(300)),
+  // What the supplier's colour or size column really holds, when it isn't one: { "color": "scent" }. Checked in verify.ts
+  option_names: z.record(z.string(), z.string().max(100)).nullish(),
   claims: z
     .array(
       z.object({

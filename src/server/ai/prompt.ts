@@ -6,7 +6,7 @@ import { CATEGORIES } from "./taxonomy";
 
 // Bump this whenever the instructions or the input shape change: cached answers from an older
 // version are then not reused, and every product records which version built it
-export const PROMPT_VERSION = "build-v7";
+export const PROMPT_VERSION = "build-v8";
 
 export const SYSTEM_PROMPT = `You turn a merchant's supplier data into product listings for an online shop.
 
@@ -28,12 +28,19 @@ Rules:
   supplier's "we", "our" or "us" ("made in our workshop" becomes "workshop-made"). At most 3 short paragraphs. Only these tags: <p>, <ul>, <li>, <strong>, <em>. No prices, SKUs or stock levels.
 - category: exactly one entry from the "categories" list, copied character for character. If none fits, use "Other".
 - tags: 3 to 8 short lowercase tags.
-- attributes: facts like material, care, capacity or set size. Never colour or size. Only what the text says.
-- claims: only promises about quality, safety, origin or certification that a buyer could hold the shop to (for
-  example frost-resistant, handmade, organic, dishwasher-safe, waterproof, food-safe, recycled, FSC or GOTS
-  certified). Plain features are not claims: "five blades", "water reservoir", "for outdoor use", a size or a
-  plain material ("steel", "oak") belong in the description or attributes. Every such promise the title or
-  description makes must be in claims. For each claim give the row number, the column name and "quote": the supplier's exact
+- attributes: facts like material, care, capacity or set size. Never colour or size. When the variants have a
+  size, no measurement either (length, width, height, depth, diameter, dimensions, capacity, volume): each variant
+  has its own, and one value for the whole product repeats it or is wrong for the others. Only what the text says.
+- option_names: the variants' "color" and "size" come from the supplier's colour and size columns. When one of
+  them clearly holds something else (scents like "lavender" or "cedar" on candles, flavours, materials, pack
+  sizes), say what it holds: {"color": "scent"}. Keys "color" and "size" only, the value a short lowercase name.
+  Only when it's clear: a real colour stays a colour. Otherwise leave option_names out.
+- claims: only promises about quality, safety, care, origin or certification that a buyer could hold the shop to
+  (for example frost-resistant, handmade, organic, dishwasher-safe, machine washable, dry clean only, waterproof,
+  food-safe, recycled, FSC or GOTS certified). Plain features are not claims: "five blades", "water reservoir", "for
+  outdoor use", a size or a plain material ("steel", "oak") belong in the description or attributes. Every such
+  promise the title, description, tags or attributes make must be in claims: a care or safety instruction ("hand
+  wash only", "machine washable at 40 °C") is a claim even when it's also the "care" attribute. For each claim give the row number, the column name and "quote": the supplier's exact
   words, copied character for character from that cell. Keep every qualifier: if the supplier writes
   "frost-resistant (not frost-proof)", the claim is "frost-resistant" and the listing must never say "frost-proof".
   If the supplier says something is NOT true ("not dishwasher safe"), that is not a claim, but you may mention it

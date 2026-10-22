@@ -60,6 +60,9 @@ const MATERIALS: [RegExp, string][] = [
 
 const CARE = /bring indoors[^.;)]*|hand wash[^.;)]*|machine washable[^.;)]*|nicht frostfest|ne résiste pas au gel/i;
 
+// Scents a supplier put in the Colour column of a candle sheet
+const SCENTS = /^(lavender|cedar(wood)?|vanilla|sandalwood|jasmine|eucalyptus|bergamot|fig|unscented)$/i;
+
 type MockState = { calls: number; failed: number; noCredit: number; rateLimited: boolean; truncated: boolean; badJson: boolean };
 const state: MockState = { calls: 0, failed: 0, noCredit: 0, rateLimited: false, truncated: false, badJson: false };
 
@@ -95,6 +98,9 @@ function draftFor(product: ProductInput, invent: boolean, translate: boolean): P
   if (material) attributes.material = material;
   const care = allText.match(CARE)?.[0];
   if (care) attributes.care = care.trim();
+
+  const colors = product.variants.map((v) => v.color).filter((c): c is string => Boolean(c));
+  const scented = category?.endsWith("Candles & Home Fragrance") && colors.length > 0 && colors.every((c) => SCENTS.test(c));
 
   // One claim per risky claim the supplier actually makes, quoting the sentence it's in
   const claims: ProductDraft["claims"] = [];
@@ -141,6 +147,7 @@ function draftFor(product: ProductInput, invent: boolean, translate: boolean): P
     category: category ?? "Other",
     tags,
     attributes,
+    ...(scented ? { option_names: { color: "scent" } } : {}),
     claims,
     confidence,
     needs_review: thin,
