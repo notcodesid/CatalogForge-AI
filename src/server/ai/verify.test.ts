@@ -253,7 +253,7 @@ describe("verifyDraft", () => {
     ]);
   });
 
-  it("flags a claim made in the title or tags, and names where it is", () => {
+  it("flags a claim made in the title, and drops a tag that makes one", () => {
     const bowls: ProductInput = {
       key: "sku:bw-set",
       language: "en",
@@ -264,9 +264,66 @@ describe("verifyDraft", () => {
     expect(verifyDraft(answer({ title: "Handmade Bamboo Bowl Set" }), bowls).reviewReasons).toEqual([
       'The title says "handmade", but the supplier never says that',
     ]);
-    expect(verifyDraft(answer({ title: "Bamboo Bowl Set", tags: ["bamboo", "handmade"] }), bowls).reviewReasons).toEqual([
-      'The tags say "handmade", but the supplier never says that',
-    ]);
+    // A tag is ours to write: one the supplier doesn't back goes, instead of sending the product to review
+    const tagged = verifyDraft(answer({ title: "Bamboo Bowl Set", tags: ["bamboo", "handmade", "hand-finished"] }), bowls);
+    expect(tagged.tags).toEqual(["bamboo", "hand-finished"]);
+    expect(tagged.reviewReasons).toEqual([]);
+  });
+
+  // Level 3 of the tester's sheet: the AI upgraded partial claims in its tags and added materials nobody stated
+  it("drops tags the supplier doesn't back: a partial claim made whole, a denied one, a word never written", () => {
+    const sheet = (cells: Record<string, string>, variants: ProductInput["variants"] = []): ProductInput => ({ key: "k", language: "en", variants, sourceRows: [{ row: 2, cells }] });
+    const tote = sheet({ "Product Name": "Cotton Tote", Description: "Tote bag made from an organic cotton blend." });
+    const result = verifyDraft(
+      draft({
+        key: "k",
+        title: "Cotton Tote",
+        description_html: "<p>Tote bag made from an organic cotton blend.</p>",
+        tags: ["tote bag", "organic", "organic cotton", "organic cotton blend", "reusable", "cotton"],
+        claims: [{ text: "organic cotton blend", row: 2, column: "Description", quote: "organic cotton blend" }],
+      }),
+      tote,
+    );
+    expect(result.tags).toEqual(["tote bag", "organic cotton blend", "cotton"]);
+    expect(result.claims.map((c) => c.text)).toEqual(["organic cotton blend"]);
+    expect(result.reviewReasons).toEqual([]);
+
+    // "organic" on its own, as a claim or in the description, isn't what the supplier said either
+    const upgraded = verifyDraft(
+      draft({ key: "k", title: "Organic Cotton Tote", description_html: "<p>Tote bag.</p>", claims: [{ text: "organic", row: 2, column: "Description", quote: "organic cotton blend" }] }),
+      tote,
+    );
+    expect(upgraded.claims).toEqual([]);
+    expect(upgraded.reviewReasons).toEqual(['Removed claim "organic": the supplier only says it in part (row 2, Description)', 'The title says "organic", but the supplier only says it in part']);
+
+    // A material nobody stated ("ceramic" for a glazed vase). The variant's colour counts as the supplier's word
+    const vase = sheet({ "Product Name": "Glazed Vase", Description: "Glazed vase." }, [{ sku: "VS-01", size: "25 cm", color: "blue", options: {} }]);
+    expect(verifyDraft(draft({ key: "k", title: "Glazed Vase", description_html: "<p>Glazed vase.</p>", tags: ["glazed vase", "ceramic", "blue"] }), vase).tags).toEqual(["glazed vase", "blue"]);
+
+    // "frost-proof" when the supplier says "not frost-proof"
+    expect(verifyDraft(draft({ tags: ["terracotta", "frost-proof", "frost-resistant"] }), input).tags).toEqual(["terracotta", "frost-resistant"]);
+  });
+
+  it("reads the supplier's German or French for a claim: Edelstahl is stainless", () => {
+    const scissors: ProductInput = { key: "k", language: "de", variants: [], sourceRows: [{ row: 5, cells: { Bezeichnung: "Kräuterschere", Beschreibung: "Fünf Klingen für frische Kräuter. Edelstahl." } }] };
+    const result = verifyDraft(
+      draft({ key: "k", title: "Herb Scissors", description_html: "<p>Herb scissors with five blades for fresh herbs. Stainless steel.</p>", tags: ["herb scissors", "stainless steel"] }),
+      scissors,
+    );
+    expect(result.reviewReasons).toEqual([]);
+    expect(result.tags).toEqual(["herb scissors", "stainless steel"]);
+    // The claim says what the supplier said, quoting their word
+    expect(result.claims).toEqual([{ text: "stainless steel", source: "row 5, column Beschreibung", quote: "Edelstahl." }]);
+    // "Rust-resistant" is a stronger promise than "Edelstahl"
+    const stronger = verifyDraft(draft({ key: "k", title: "Herb Scissors", description_html: "<p>Rust-resistant herb scissors.</p>" }), scissors);
+    expect(stronger.reviewReasons).toEqual(['The description says "rust resistant", but the supplier never says that']);
+  });
+
+  it("doesn't take an honest rewording for an invented detail", () => {
+    // Seen in a real run: "machine made, finished by hand" became "finished by hand after machine production"
+    const bowl: ProductInput = { key: "k", language: "en", variants: [], sourceRows: [{ row: 8, cells: { "Product Name": "Bamboo Bowl", Description: "Bamboo bowl. Hand-finished (machine made, finished by hand)." } }] };
+    const result = verifyDraft(draft({ key: "k", title: "Bamboo Bowl", description_html: "<p>Bamboo bowl, finished by hand after machine production.</p>" }), bowl);
+    expect(result.reviewReasons).toEqual([]);
   });
 
   it("keeps what the AI says the colour or size column really holds, when it's usable", () => {

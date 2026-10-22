@@ -6,7 +6,7 @@ import { CATEGORIES } from "./taxonomy";
 
 // Bump this whenever the instructions or the input shape change: cached answers from an older
 // version are then not reused, and every product records which version built it
-export const PROMPT_VERSION = "build-v8";
+export const PROMPT_VERSION = "build-v9";
 
 export const SYSTEM_PROMPT = `You turn a merchant's supplier data into product listings for an online shop.
 
@@ -27,7 +27,9 @@ Rules:
   Write as the shop, for the shopper: never mention the supplier ("the supplier states..."), and don't copy the
   supplier's "we", "our" or "us" ("made in our workshop" becomes "workshop-made"). At most 3 short paragraphs. Only these tags: <p>, <ul>, <li>, <strong>, <em>. No prices, SKUs or stock levels.
 - category: exactly one entry from the "categories" list, copied character for character. If none fits, use "Other".
-- tags: 3 to 8 short lowercase tags.
+- tags: 3 to 8 short lowercase tags, only from what the supplier's text says: the product type, its material, colour
+  and use. Never a material, quality or certification the supplier doesn't state, and never a stronger version of
+  one ("organic" when the supplier says "organic cotton blend").
 - attributes: facts like material, care, capacity or set size. Never colour or size. When the variants have a
   size, no measurement either (length, width, height, depth, diameter, dimensions, capacity, volume): each variant
   has its own, and one value for the whole product repeats it or is wrong for the others. Only what the text says.

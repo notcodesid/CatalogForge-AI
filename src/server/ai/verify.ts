@@ -1,7 +1,7 @@
 import type { Claim } from "@/server/db/schema";
 import { cleanDescription } from "@/server/pipeline/clean/html";
 import { cleanText } from "@/server/pipeline/clean/text";
-import { claimedConcepts, claimLabel, findMentions, normalizeForMatch } from "./claims";
+import { claimBacking, claimedConcepts, claimLabel, findMentions, normalizeForMatch, type Mention } from "./claims";
 import { CONFIDENCE_THRESHOLD } from "./confidence";
 import { cleanOptionNames, type OptionNames } from "./option-names";
 import type { ProductInput } from "./prompt";
@@ -70,8 +70,9 @@ const PLAIN_WORDS = new Set(
   [
     "the and but for from with without into onto over under about this that these those its are was were been being has have",
     "had can will may each every any all both either other some such you your our their they them which who when where",
-    "while than then there here also very more most only not per via too own same please note",
+    "while than then there here also very more most only not per via too own same please note after before",
     "made make makes come comes include includes included including feature features featuring available offered sold",
+    "produced production manufactured manufacture",
     "supplied set sets pack packs piece pieces pcs item items product products size sizes capacity colour colours color colors",
     "option options variant variants choice choose one two three four five six seven eight nine ten eleven twelve twenty",
     "thirty forty fifty hundred dozen pair",
@@ -123,12 +124,30 @@ export function wordChecker(texts: (string | null | undefined)[]): (word: string
     known.has(word) || [...known].some((k) => (k.length >= 4 && word.startsWith(k)) || (word.length >= 4 && k.startsWith(word)));
 }
 
+// A tag is only kept when the supplier backs it. Tags are search words we write, so instead of sending the product
+// to review, a tag that isn't backed is dropped: one making a claim the supplier doesn't make ("organic" for an
+// "organic cotton blend"), and, for English suppliers, one using a word the supplier never wrote ("ceramic" for a
+// "glazed vase"). The category and the variants' options count as the supplier's words. A translation shares no words
+// with German or French text, so for those only the claims are checked
+function tagIsBacked(tag: string, input: ProductInput, category: string | null, backed: (m: Mention) => boolean): boolean {
+  if (findMentions(tag).some((m) => !m.negated && !backed(m))) return false;
+  if (input.language !== "en") return true;
+  const isKnown = wordChecker([
+    ...cellsOf(input).map((c) => c.text),
+    ...input.variants.flatMap((v) => [v.size, v.color, ...Object.values(v.options)]),
+    category?.replace(/[>&]/g, " "),
+  ]);
+  return factWords(tag).every(isKnown);
+}
+
 // Checks everything the AI wrote against the supplier's own text. We don't trust the model to police
 // itself: an unsupported claim is removed, and anything doubtful sends the product to review
 export function verifyDraft(draft: ProductDraft, input: ProductInput): VerifiedDraft {
   const reasons: string[] = [];
   const cells = cellsOf(input);
-  const sourceClaims = claimedConcepts(cells.map((c) => c.text).join(". "));
+  const sourceText = cells.map((c) => c.text).join(". ");
+  const sourceClaims = claimedConcepts(sourceText);
+  const backed = claimBacking(sourceText);
 
   const title = cleanText(draft.title) ?? "";
   if (!title) reasons.push("The AI wrote no title");
@@ -149,7 +168,7 @@ export function verifyDraft(draft: ProductDraft, input: ProductInput): VerifiedD
   }
 
   const tags = [...new Set(draft.tags.map((t) => cleanText(t)?.toLowerCase()).filter((t): t is string => Boolean(t)))]
-    .filter((t) => t.length <= 40)
+    .filter((t) => t.length <= 40 && tagIsBacked(t, input, category, backed))
     .slice(0, 10);
 
   // A colour column that holds scents makes "scent" a per-variant fact too
@@ -178,15 +197,17 @@ export function verifyDraft(draft: ProductDraft, input: ProductInput): VerifiedD
       continue;
     }
 
-    const concepts = claimedConcepts(claim.text);
     const cellMentions = findMentions(found.text);
-    const unsupported = [...concepts].find((id) => !cellMentions.some((m) => m.concept.id === id && !m.negated));
+    const unsupported = findMentions(claim.text).find((m) => !m.negated && !claimBacking(found.text)(m))?.concept.id;
     if (unsupported) {
       const denied = cellMentions.some((m) => m.concept.id === unsupported && m.negated);
+      const partly = cellMentions.some((m) => m.concept.id === unsupported && !m.negated && m.qualified);
       reasons.push(
         denied
           ? `Removed claim "${claim.text}": the supplier says it isn't (row ${found.row}, ${found.column})`
-          : `Removed claim "${claim.text}": the supplier's text doesn't say that`,
+          : partly
+            ? `Removed claim "${claim.text}": the supplier only says it in part (row ${found.row}, ${found.column})`
+            : `Removed claim "${claim.text}": the supplier's text doesn't say that`,
       );
       continue;
     }
@@ -195,7 +216,8 @@ export function verifyDraft(draft: ProductDraft, input: ProductInput): VerifiedD
     claims.push({ text: claim.text, source: `row ${found.row}, column ${found.column}`, quote: claim.quote });
   }
 
-  // Everything the shop shows that can make a claim. Attribute values too: "care: dry clean only" is a promise
+  // Everything the shop shows that can make a claim. Attribute values too: "care: dry clean only" is a promise. Tags
+  // were already checked above, a tag the supplier doesn't back is dropped
   const fields = [
     { says: "The title says", text: title },
     { says: "The description says", text: description?.text ?? "" },
@@ -207,20 +229,24 @@ export function verifyDraft(draft: ProductDraft, input: ProductInput): VerifiedD
   const reported = new Set<string>();
   for (const field of fields) {
     for (const m of findMentions(field.text)) {
-      if (m.negated || sourceClaims.has(m.concept.id) || reported.has(m.concept.id)) continue;
+      if (m.negated || backed(m) || reported.has(m.concept.id)) continue;
       reported.add(m.concept.id);
-      reasons.push(`${field.says} "${m.phrase}", but the supplier never says that`);
+      // The supplier makes the claim, but only in part ("organic cotton blend"), or not at all
+      reasons.push(`${field.says} "${m.phrase}", but the supplier ${sourceClaims.has(m.concept.id) ? "only says it in part" : "never says that"}`);
     }
   }
 
   // The listing says "handmade", the supplier says so too, but the AI left it out of the claims: add it with its
-  // source, so every claim the shop makes points back to the supplier's words
-  for (const id of claimedConcepts(fields.map((f) => f.text).join(". "))) {
-    if (!sourceClaims.has(id) || claims.some((c) => claimedConcepts(c.text).has(id))) continue;
+  // source, so every claim the shop makes points back to the supplier's words. Only claims the supplier backs (the
+  // rest were reported above); one the supplier only makes in part is labelled so ("organic (in part)")
+  const listed = findMentions(fields.map((f) => f.text).join(". ")).filter((m) => !m.negated && backed(m));
+  for (const id of new Set(listed.map((m) => m.concept.id))) {
+    if (claims.some((c) => claimedConcepts(c.text).has(id))) continue;
+    const inPart = listed.every((m) => m.concept.id !== id || m.qualified);
     for (const cell of cells) {
       const sentence = cell.text.split(/(?<=[.!?])\s+/).find((s) => claimedConcepts(s).has(id));
       if (!sentence) continue;
-      claims.push({ text: claimLabel(id), source: `row ${cell.row}, column ${cell.column}`, quote: sentence });
+      claims.push({ text: inPart ? `${claimLabel(id)} (in part)` : claimLabel(id), source: `row ${cell.row}, column ${cell.column}`, quote: sentence });
       break;
     }
   }
@@ -234,7 +260,7 @@ export function verifyDraft(draft: ProductDraft, input: ProductInput): VerifiedD
 
   // Other details the supplier never gave. A sentence already reported above for a risky claim isn't repeated
   const invented = unsupportedSentences(descriptionHtml, input).filter(
-    (s) => !findMentions(s).some((m) => !m.negated && !sourceClaims.has(m.concept.id)),
+    (s) => !findMentions(s).some((m) => !m.negated && !backed(m)),
   );
   if (invented.length) {
     const quoted = invented.slice(0, 2).map((s) => `"${s.length > 150 ? `${s.slice(0, 150)}…` : s}"`.replace(/;/g, ","));
