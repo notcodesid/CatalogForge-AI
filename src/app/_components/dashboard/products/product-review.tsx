@@ -94,11 +94,15 @@ export function ProductReview({ id }: { id: string }) {
             onSaved={(result) => {
               setEditing(false);
               show(result.product);
+              // Prices aren't text: the sheet, not the AI, would change them, and they aren't translated
+              const text = result.changed.filter((field) => field !== "prices").length;
               setNotice(
                 result.changed.length
                   ? {
                       tone: result.warnings.length ? "warning" : "success",
-                      title: `Saved. ${result.changed.length === 1 ? "This field is" : "These fields are"} yours now: the AI won't overwrite ${result.changed.length === 1 ? "it" : "them"}, and only what changed is translated again`,
+                      title: text
+                        ? `Saved. ${text === 1 ? "This field is" : "These fields are"} yours now: the AI won't overwrite ${text === 1 ? "it" : "them"}, and only what changed is translated again`
+                        : "Saved. A re-upload of the sheet won't change your prices",
                       lines: result.warnings,
                     }
                   : { tone: "success", title: "Nothing changed" },
@@ -178,6 +182,10 @@ function Header({
     });
 
   const translations = Object.fromEntries(product.translations.filter((t) => t.enabled).map((t) => [t.locale, t.status]));
+  // The server refuses to approve a product with an unpriced variant, so the button says so before it's clicked,
+  // and Edit (where the price is added) becomes the main action
+  const unpriced = product.variants.filter((v) => v.priceCents === null).map((v) => v.sku);
+  const blocked = product.status !== "approved" && !deleted && unpriced.length > 0;
 
   return (
     <div className="space-y-3">
@@ -208,40 +216,54 @@ function Header({
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          {deleted ? (
-            <button type="button" className={buttonClasses("primary")} disabled={busy} onClick={restore}>
-              Restore
-            </button>
-          ) : (
-            <>
-              {product.status !== "approved" && (
-                <button type="button" className={buttonClasses("primary")} disabled={busy || editing} onClick={approve}>
-                  Approve
-                </button>
-              )}
-              <button type="button" className={buttonClasses("secondary")} disabled={busy || editing} onClick={() => setSendingBack((s) => !s)} aria-expanded={sendingBack}>
-                Send back
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          <div className="flex flex-wrap gap-2">
+            {deleted ? (
+              <button type="button" className={buttonClasses("primary")} disabled={busy} onClick={restore}>
+                Restore
               </button>
-              <button type="button" className={buttonClasses("secondary")} disabled={busy || editing} onClick={onEdit}>
-                Edit
-              </button>
-              {confirmDelete ? (
-                <span className="inline-flex items-center gap-2 rounded-md border border-danger/40 bg-danger-soft px-2">
-                  <span className="text-sm text-danger">Delete it?</span>
-                  <button type="button" className={buttonClasses("ghost", "sm")} disabled={busy} onClick={remove}>
-                    Yes, delete
+            ) : (
+              <>
+                {product.status !== "approved" && (
+                  <button
+                    type="button"
+                    className={buttonClasses(blocked ? "secondary" : "primary")}
+                    disabled={busy || editing || blocked}
+                    aria-describedby={blocked ? "approve-blocked" : undefined}
+                    onClick={approve}
+                  >
+                    Approve
                   </button>
-                  <button type="button" className={buttonClasses("ghost", "sm")} onClick={() => setConfirmDelete(false)}>
-                    Keep it
-                  </button>
-                </span>
-              ) : (
-                <button type="button" className={`${buttonClasses("ghost")} text-danger`} disabled={busy || editing} onClick={() => setConfirmDelete(true)}>
-                  Delete
+                )}
+                <button type="button" className={buttonClasses("secondary")} disabled={busy || editing} onClick={() => setSendingBack((s) => !s)} aria-expanded={sendingBack}>
+                  Send back
                 </button>
-              )}
-            </>
+                <button type="button" className={buttonClasses(blocked ? "primary" : "secondary")} disabled={busy || editing} onClick={onEdit}>
+                  Edit
+                </button>
+                {confirmDelete ? (
+                  <span className="inline-flex items-center gap-2 rounded-md border border-danger/40 bg-danger-soft px-2">
+                    <span className="text-sm text-danger">Delete it?</span>
+                    <button type="button" className={buttonClasses("ghost", "sm")} disabled={busy} onClick={remove}>
+                      Yes, delete
+                    </button>
+                    <button type="button" className={buttonClasses("ghost", "sm")} onClick={() => setConfirmDelete(false)}>
+                      Keep it
+                    </button>
+                  </span>
+                ) : (
+                  <button type="button" className={`${buttonClasses("ghost")} text-danger`} disabled={busy || editing} onClick={() => setConfirmDelete(true)}>
+                    Delete
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+          {blocked && (
+            <p id="approve-blocked" className="text-sm text-danger">
+              Can&apos;t approve yet:{" "}
+              {unpriced.length === 1 ? `SKU ${unpriced[0]} has no price. Add it with Edit` : `SKUs ${unpriced.join(", ")} have no price. Add them with Edit`}
+            </p>
           )}
         </div>
       </div>

@@ -109,7 +109,12 @@ export function ListingPanel({ product }: { product: ProductDetail }) {
                       .map(([name, value]) => `${humanize(name)}: ${value}`)
                       .join(" · ") || <span className="text-muted-foreground">—</span>}
                   </td>
-                  <td className="px-3 py-1.5 tabular-nums">{formatPrice(v.priceCents, v.currency) ?? <span className="font-medium text-danger">No price</span>}</td>
+                  <td className="px-3 py-1.5 tabular-nums">
+                    <span className="inline-flex flex-wrap items-center gap-1.5">
+                      {formatPrice(v.priceCents, v.currency) ?? <span className="font-medium text-danger">No price</span>}
+                      {v.priceSetByHand && <Badge tone="info">Set by you</Badge>}
+                    </span>
+                  </td>
                   <td className="px-3 py-1.5 tabular-nums text-muted-foreground">{v.weightGrams !== null ? `${v.weightGrams.toLocaleString("en")} g` : "—"}</td>
                 </tr>
               ))}
@@ -117,7 +122,7 @@ export function ListingPanel({ product }: { product: ProductDetail }) {
           </table>
         </div>
         {product.variants.some((v) => v.priceCents === null) && (
-          <p className="text-xs text-danger">A variant without a price can&apos;t be sold, so the product can&apos;t be approved until the sheet has it.</p>
+          <p className="text-xs text-danger">A variant without a price can&apos;t be sold. Add the price with Edit, or upload a sheet that has it.</p>
         )}
       </Field>
     </section>

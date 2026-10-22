@@ -4,9 +4,12 @@ import { useMemo, useState } from "react";
 import { CATEGORIES } from "@/server/ai/taxonomy";
 import { buttonClasses, focusClasses } from "../ui";
 import { type EditResult, errorMessage, type ProductDetail, sendJson } from "./api";
-import { categoryGroups, tagsFromText, tagsToText } from "./view";
+import { categoryGroups, humanize, tagsFromText, tagsToText } from "./view";
 
 const inputClasses = `w-full rounded-md border border-border bg-background px-3 py-2 text-sm ${focusClasses}`;
+
+// 2150 -> "21.50", the way the merchant types a price. Integer maths on the cents
+const priceText = (cents: number | null) => (cents === null ? "" : `${Math.trunc(cents / 100)}.${String(cents % 100).padStart(2, "0")}`);
 
 // The merchant's own edit of the English. Only the fields that really changed are sent: those become theirs
 // (a re-upload won't overwrite them) and only those are translated again
@@ -16,6 +19,8 @@ export function EditForm({ product, onSaved, onCancel }: { product: ProductDetai
   const [category, setCategory] = useState(product.category ?? "");
   const [tags, setTags] = useState(tagsToText(product.tags));
   const [attributes, setAttributes] = useState(() => Object.entries(product.attributes).map(([key, value]) => ({ key, value })));
+  // By SKU, as typed. The server reads "21.50" or "21,50" and stores cents
+  const [prices, setPrices] = useState(() => Object.fromEntries(product.variants.map((v) => [v.sku, priceText(v.priceCents)])));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const groups = useMemo(() => categoryGroups(CATEGORIES), []);
@@ -29,6 +34,8 @@ export function EditForm({ product, onSaved, onCancel }: { product: ProductDetai
     if (nextTags.join("\n") !== product.tags.join("\n")) body.tags = nextTags;
     const nextAttributes = Object.fromEntries(attributes.filter((a) => a.key.trim() && a.value.trim()).map((a) => [a.key.trim().toLowerCase(), a.value.trim()]));
     if (JSON.stringify(Object.entries(nextAttributes).sort()) !== JSON.stringify(Object.entries(product.attributes).sort())) body.attributes = nextAttributes;
+    const nextPrices = product.variants.filter((v) => prices[v.sku].trim() !== priceText(v.priceCents)).map((v) => [v.sku, prices[v.sku].trim()]);
+    if (nextPrices.length) body.prices = Object.fromEntries(nextPrices);
     return body;
   };
 
@@ -133,6 +140,37 @@ export function EditForm({ product, onSaved, onCancel }: { product: ProductDetai
           Add an attribute
         </button>
       </fieldset>
+
+      {product.variants.length > 0 && (
+        <fieldset className="space-y-2 text-sm">
+          <legend className="font-medium">Prices</legend>
+          <p className="text-xs text-muted-foreground">Like 21.50 or 21,50.</p>
+          {product.variants.map((v) => {
+            const options = Object.entries(v.options)
+              .map(([name, value]) => `${humanize(name)}: ${value}`)
+              .join(" · ");
+            return (
+              <div key={v.id} className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-mono text-xs">{v.sku}</p>
+                  {options && <p className="truncate text-xs text-muted-foreground">{options}</p>}
+                </div>
+                <div className="w-28 shrink-0">
+                  <input
+                    aria-label={`Price of ${v.sku} in ${v.priceCurrency}`}
+                    inputMode="decimal"
+                    placeholder="No price"
+                    value={prices[v.sku]}
+                    onChange={(e) => setPrices((list) => ({ ...list, [v.sku]: e.target.value }))}
+                    className={`${inputClasses} text-right tabular-nums`}
+                  />
+                </div>
+                <span className="w-9 shrink-0 text-xs text-muted-foreground">{v.priceCurrency}</span>
+              </div>
+            );
+          })}
+        </fieldset>
+      )}
 
       {error && (
         <p role="alert" className="rounded-md border border-danger/30 bg-danger-soft p-2 text-sm text-danger">

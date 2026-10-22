@@ -40,6 +40,10 @@ export type Variant = {
   options: Record<string, string>;
   priceCents: number | null;
   currency: string | null;
+  // The merchant typed this price in Edit: a re-upload of the sheet doesn't change it
+  priceSetByHand: boolean;
+  // The currency a price typed in Edit is saved in
+  priceCurrency: string;
   weightGrams: number | null;
   position: number;
 };
