@@ -1,0 +1,1 @@
+ALTER TABLE "imports" ADD COLUMN "build_planned_at" timestamp with time zone;

@@ -1,0 +1,1 @@
+ALTER TABLE "ai_status" ADD COLUMN "next_call_at" timestamp with time zone;
