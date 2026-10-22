@@ -68,7 +68,7 @@ const KNOWN = [...LOOKUP.keys()];
 
 // Typo distance where swapping two neighbouring letters counts as one typo ("gery" -> "grey" = 1),
 // like a person would count it (Levenshtein would say 2)
-export function typoDistance(a: string, b: string): number {
+function typoDistance(a: string, b: string): number {
   const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array<number>(b.length).fill(0)]);
   for (let j = 1; j <= b.length; j++) d[0][j] = j;
   for (let i = 1; i <= a.length; i++) {
@@ -107,7 +107,7 @@ export function isColorWord(word: string): boolean {
   return LOOKUP.has(normalize(word));
 }
 
-export function matchColor(word: string): string | null {
+function matchColor(word: string): string | null {
   const key = normalize(word);
   return LOOKUP.get(key) ?? closest(key);
 }

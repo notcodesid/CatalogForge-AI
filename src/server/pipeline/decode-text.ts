@@ -10,7 +10,7 @@ const CP1252_HIGH: Record<number, string> = {
 // Character -> byte, for the characters above. Used to undo broken text (see fixMojibake)
 export const CP1252_TO_BYTE = new Map(Object.entries(CP1252_HIGH).map(([byte, char]) => [char, Number(byte)]));
 
-export function decodeWindows1252(bytes: Uint8Array): string {
+function decodeWindows1252(bytes: Uint8Array): string {
   let text = "";
   for (const byte of bytes) text += CP1252_HIGH[byte] ?? String.fromCharCode(byte);
   return text;

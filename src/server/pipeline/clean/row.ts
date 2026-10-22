@@ -1,3 +1,4 @@
+import { findInstructions } from "@/server/ai/injection";
 import { matchHeader } from "../columns";
 import type { ColumnHints, CleanedRow, Field, Issue, RowRole } from "../types";
 import { normalizeColor } from "./color";
@@ -117,6 +118,13 @@ export function cleanRow(input: RowInput, ctx: RowContext): CleanRowResult {
   for (const [header, value] of Object.entries(input.extra)) {
     const text = cleanText(value);
     if (text) extra[header] = text;
+  }
+
+  // Text aimed at the AI rather than describing the product ("Ignore previous instructions..."):
+  // a person should look, and the AI never sees it (see ai/prompt.ts)
+  const instructions = [title, description?.text, notes, ...Object.values(extra)].flatMap((t) => (t ? findInstructions(t) : []));
+  if (instructions.length) {
+    review("description", `Text looks like instructions for an AI, not product information: "${instructions[0]}"`);
   }
 
   const cleaned: CleanedRow = {

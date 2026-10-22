@@ -5,7 +5,7 @@ import { decodeText } from "./decode-text";
 import type { SheetType } from "./detect-file-type";
 import type { Field, ParseInfo } from "./types";
 
-export const MAX_ROWS = 10_000;
+const MAX_ROWS = 10_000;
 
 // A problem with the file itself. The import fails with this message and isn't retried
 export class ImportFileError extends Error {}
