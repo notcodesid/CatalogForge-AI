@@ -24,7 +24,7 @@
 
 ### Mixed units (cm/inch, kg/lbs)
 - **What happens:** Sizes in cm and inches, weights in kg and lbs, in the same sheet
-- **What the app does:** Code converts everything to cm and grams. If a value has no unit, use the unit from the column header. If that's missing too, Needs review
+- **What the app does:** Code turns inches into cm and every weight into grams. Metric sizes keep the supplier's unit ("100 m" stays "100 m"), but compare by millimetres, so "100 cm" and "1 m" are the same size. If a value has no unit, use the unit from the column header. If that's missing too, Needs review
 - **Status:** Not handled yet
 
 ### Description has HTML or script tags

@@ -175,7 +175,7 @@ Dashboard at `/` (Upload, Products, Metrics), storefront at `/shop`.
 1. **Upload** saves the sheet and the photos and queues the work. The request returns straight away. Up to 2,000
    photos per import (JPEG, PNG or WebP, 20 MB each), as single files or ZIPs; the real file type is checked from
    its bytes, and anything else is listed as rejected with the reason.
-2. **Read, clean, group** (worker): prices to cents, units to cm/grams, broken text and HTML fixed, rows grouped
+2. **Read, clean, group** (worker): prices to cents, weights to grams, inches to cm, broken text and HTML fixed, rows grouped
    into products. Shopify and WooCommerce exports are recognised.
 3. **Photos** (worker, in parallel): each photo is turned the right way up, stripped of camera and location data,
    and saved as a WebP copy plus a thumbnail. The same picture uploaded twice is stored once. Photos are matched
