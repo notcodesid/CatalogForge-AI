@@ -71,6 +71,20 @@
       "when": 1792667645714,
       "tag": "0009_products_by_import",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792696438906,
+      "tag": "0010_variant_price_by_hand",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792697231436,
+      "tag": "0011_option_names",
+      "breakpoints": true
     }
   ]
 }

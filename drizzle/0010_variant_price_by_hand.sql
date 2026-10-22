@@ -1,0 +1,1 @@
+ALTER TABLE "variants" ADD COLUMN "price_set_by_hand" boolean DEFAULT false NOT NULL;
