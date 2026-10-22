@@ -8,6 +8,14 @@ import { enabledLocales } from "@/server/translations/languages";
 // The reasons a product needs review, one per entry (they're stored joined with "; ")
 export const splitReasons = (reason: string | null) => (reason ? reason.split("; ").filter(Boolean) : []);
 
+// The currency a price typed in Edit is saved in: the variant's own, else the one the product's other variants use
+// (if they agree on one), else the default currency of the import that last wrote the product, else EUR
+export function priceCurrency(variant: { currency: string | null }, all: { currency: string | null }[], importDefault?: string | null) {
+  if (variant.currency) return variant.currency;
+  const used = new Set(all.flatMap((v) => (v.currency ? [v.currency] : [])));
+  return used.size === 1 ? [...used][0] : (importDefault ?? "EUR");
+}
+
 // Everything the review screen shows side by side: what the AI wrote (with its confidence per field and the
 // source of every claim), next to what the supplier sent (the sheet's rows, the text the listing was written
 // from, the photos). Deleted products are included, so they can be looked at and restored
@@ -21,7 +29,10 @@ export async function productDetail(db: Db, productId: string) {
     db.select().from(translationState).where(eq(translationState.productId, productId)),
     enabledLocales(db),
     product.lastImportId
-      ? db.select({ id: imports.id, fileName: imports.sheetFileName, createdAt: imports.createdAt }).from(imports).where(eq(imports.id, product.lastImportId))
+      ? db
+          .select({ id: imports.id, fileName: imports.sheetFileName, createdAt: imports.createdAt, defaultCurrency: imports.defaultCurrency })
+          .from(imports)
+          .where(eq(imports.id, product.lastImportId))
       : Promise.resolve([]),
     // The rows of the sheet that last wrote this product
     product.lastImportId && product.sourceRows.length
@@ -34,6 +45,7 @@ export async function productDetail(db: Db, productId: string) {
   ]);
 
   const confidenceValues = Object.values(product.confidence);
+  const [imp] = lastImport;
   return {
     id: product.id,
     handle: product.handle,
@@ -59,13 +71,17 @@ export async function productDetail(db: Db, productId: string) {
     deletedAt: product.deletedAt,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
-    lastImport: lastImport[0] ?? null,
+    lastImport: imp ? { id: imp.id, fileName: imp.fileName, createdAt: imp.createdAt } : null,
     variants: productVariants.map((v) => ({
       id: v.id,
       sku: v.sku,
       options: v.options,
       priceCents: v.priceCents,
       currency: v.currency,
+      // The merchant typed this price in Edit: a re-upload of the sheet doesn't change it
+      priceSetByHand: v.priceSetByHand,
+      // The currency a price typed in Edit is saved in
+      priceCurrency: priceCurrency(v, productVariants, imp?.defaultCurrency),
       weightGrams: v.weightGrams,
       position: v.position,
     })),

@@ -4,11 +4,16 @@ import { z } from "zod";
 import { findMentions } from "@/server/ai/claims";
 import { isCategory } from "@/server/ai/taxonomy";
 import type { Db } from "@/server/db/client";
-import { products, translationState, variants } from "@/server/db/schema";
+import { importRows, imports, products, translationState, variants } from "@/server/db/schema";
+import { rowReasons } from "@/server/pipeline/build";
 import { cleanDescription } from "@/server/pipeline/clean/html";
+import { skuKey } from "@/server/pipeline/clean/row";
 import { cleanText } from "@/server/pipeline/clean/text";
 import { enqueuePendingTranslations, noteEnglishChange } from "@/server/translations/state";
-import { type ProductDetail, productDetail, splitReasons } from "./detail";
+import { priceCurrency, type ProductDetail, productDetail, splitReasons } from "./detail";
+
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type Product = typeof products.$inferSelect;
 
 // A request the merchant can fix (unknown product, a category that isn't in the list...). Shown as is
 export class ProductActionError extends Error {
@@ -35,9 +40,32 @@ export const productEdit = z
     category: z.string().max(300).nullable().optional(),
     tags: z.array(z.string().max(100)).max(30).optional(),
     attributes: z.record(z.string().max(100), z.string().max(1000)).optional(),
+    // New prices by SKU, as typed: "21.50" or "21,50". Text, not JSON numbers: a price is never a float
+    prices: z.record(z.string().max(100), z.string().max(30)).optional(),
   })
-  .refine((edit) => Object.values(edit).some((v) => v !== undefined), "Send at least one field to change: title, descriptionHtml, category, tags or attributes");
+  .refine(
+    (edit) => Object.values(edit).some((v) => v !== undefined),
+    "Send at least one field to change: title, descriptionHtml, category, tags, attributes or prices",
+  );
 export type ProductEdit = z.infer<typeof productEdit>;
+
+// The most a typed price can be. More is surely a typo
+const MAX_PRICE_CENTS = 1_000_000_00;
+
+// A price as the merchant types it ("21.50" or "21,50") in cents. Integer maths on the digits, never floats. Zero is
+// fine (a free sample), more than 2 decimals isn't
+export function typedPriceCents(sku: string, text: string): number {
+  const value = text.trim();
+  if (!value) throw new ProductActionError(`Enter a price for SKU ${sku}, like 21.50`);
+  if (value.startsWith("-")) throw new ProductActionError(`The price of SKU ${sku} can't be negative`);
+  const match = /^(\d+)(?:[.,](\d+))?$/.exec(value);
+  if (!match) throw new ProductActionError(`The price of SKU ${sku} should be a number, like 21.50`);
+  const [, whole, fraction = ""] = match;
+  if (fraction.length > 2) throw new ProductActionError(`The price of SKU ${sku} can have at most 2 decimals`);
+  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  if (cents > MAX_PRICE_CENTS) throw new ProductActionError(`The price of SKU ${sku} can be at most 1,000,000`);
+  return cents;
+}
 
 // The product as the review screen shows it, after an action (it exists: the action just found it)
 async function detailOf(db: Db, id: string): Promise<ProductDetail> {
@@ -46,7 +74,7 @@ async function detailOf(db: Db, id: string): Promise<ProductDetail> {
   return detail;
 }
 
-async function lockProduct(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], id: string) {
+async function lockProduct(tx: Tx, id: string) {
   const [product] = await tx.select().from(products).where(eq(products.id, id)).for("update");
   if (!product) throw new ProductActionError("Product not found", 404);
   if (product.deletedAt) throw new ProductActionError("This product is deleted. Restore it first", 409);
@@ -68,9 +96,48 @@ function claimWarnings(sourceText: string | null, fields: { field: string; text:
   return warnings;
 }
 
+// Saves the prices the merchant typed (by SKU), each in its variant's currency (see priceCurrency) and marked as
+// theirs: a re-upload of the sheet never changes it. The review reasons a new price solves go away: the sheet's
+// price problems for that SKU ("Row 9: No price", two rows with different prices) and "still has no price".
+// Returns the SKUs whose price changed and the product's review reason without the solved ones
+async function savePrices(tx: Tx, product: Product, typed: Record<string, string>) {
+  const mine = await tx.select().from(variants).where(eq(variants.productId, product.id));
+  const [imp] = product.lastImportId
+    ? await tx.select({ defaultCurrency: imports.defaultCurrency }).from(imports).where(eq(imports.id, product.lastImportId))
+    : [];
+  const changed: string[] = [];
+  for (const [sku, text] of Object.entries(typed)) {
+    const variant = mine.find((v) => v.sku === sku);
+    if (!variant) throw new ProductActionError(`SKU ${sku} isn't a variant of this product`);
+    const priceCents = typedPriceCents(sku, text);
+    const currency = priceCurrency(variant, mine, imp?.defaultCurrency);
+    if (priceCents === variant.priceCents && currency === variant.currency) continue;
+    await tx.update(variants).set({ priceCents, currency, priceSetByHand: true }).where(eq(variants.id, variant.id));
+    changed.push(sku);
+  }
+  if (!changed.length) return { changed, reviewReason: product.reviewReason };
+
+  // The reasons the sheet's rows give with the earlier hand-set prices, minus the ones they still give now
+  const rows =
+    product.lastImportId && product.sourceRows.length
+      ? await tx
+          .select({ rowNumber: importRows.rowNumber, cleaned: importRows.cleaned })
+          .from(importRows)
+          .where(and(eq(importRows.importId, product.lastImportId), inArray(importRows.rowNumber, product.sourceRows)))
+      : [];
+  const sheetRows = rows.flatMap((r) => (r.cleaned ? [{ rowNumber: r.rowNumber, cleaned: r.cleaned }] : []));
+  const before = new Set(mine.filter((v) => v.priceSetByHand).map((v) => skuKey(v.sku)));
+  const left = new Set(rowReasons(sheetRows, product.productKey, new Set([...before, ...changed.map(skuKey)])));
+  const solved = new Set([
+    ...rowReasons(sheetRows, product.productKey, before).filter((r) => !left.has(r)),
+    ...changed.map((sku) => `SKU ${sku} still has no price (from an earlier upload)`),
+  ]);
+  return { changed, reviewReason: splitReasons(product.reviewReason).filter((r) => !solved.has(r)).join("; ") || null };
+}
+
 // The merchant edits the English. Each changed field is marked as theirs (the AI never overwrites it on a
-// re-upload), counts as certain (confidence 100), and only the changed fields are translated again. The status
-// doesn't change: editing isn't approving
+// re-upload), counts as certain (confidence 100), and only the changed fields are translated again. Prices they
+// type are theirs too (see savePrices). The status doesn't change: editing isn't approving
 export async function editProduct(db: Db, boss: PgBoss, id: string, edit: ProductEdit) {
   const result = await db.transaction(async (tx) => {
     const product = await lockProduct(tx, id);
@@ -109,7 +176,8 @@ export async function editProduct(db: Db, boss: PgBoss, id: string, edit: Produc
     }
 
     const changed = Object.keys(next) as (keyof typeof next)[];
-    if (!changed.length) return { changed, warnings: [] as string[] };
+    const prices = edit.prices ? await savePrices(tx, product, edit.prices) : { changed: [], reviewReason: product.reviewReason };
+    if (!changed.length && !prices.changed.length) return { changed: [] as string[], warnings: [] as string[] };
 
     // What the merchant wrote is certain. Confidence keys follow the AI's names ("description", "attributes.care")
     const confidence = { ...product.confidence };
@@ -123,7 +191,7 @@ export async function editProduct(db: Db, boss: PgBoss, id: string, edit: Produc
     }
     await tx
       .update(products)
-      .set({ ...next, confidence, merchantEditedFields: [...new Set([...product.merchantEditedFields, ...changed])] })
+      .set({ ...next, confidence, merchantEditedFields: [...new Set([...product.merchantEditedFields, ...changed])], reviewReason: prices.reviewReason })
       .where(eq(products.id, id));
     // Only fields whose English really changed get translated again
     await noteEnglishChange(tx, id);
@@ -133,7 +201,7 @@ export async function editProduct(db: Db, boss: PgBoss, id: string, edit: Produc
       ...(next.title ? [{ field: "title", text: next.title }] : []),
       ...(next.descriptionHtml !== undefined ? [{ field: "description", text: cleanDescription(next.descriptionHtml)?.text ?? "" }] : []),
     ]);
-    return { changed, warnings };
+    return { changed: [...changed, ...(prices.changed.length ? ["prices"] : [])], warnings };
   });
 
   if (result.changed.length) await enqueuePendingTranslations(db, boss, { productIds: [id] });
@@ -180,12 +248,13 @@ async function blockers(db: Db, ids: string[]): Promise<Map<string, Blocker>> {
       if (!product) return [id, { title: null, status: null, reason: "Product not found" }];
       const mine = skus.filter((v) => v.productId === id);
       const unpriced = mine.filter((v) => v.priceCents === null).map((v) => v.sku).sort();
+      const one = unpriced.length === 1;
       const reason = product.deletedAt
         ? "This product is deleted. Restore it first"
         : !mine.length
           ? "This product has no variants, so there's nothing to sell"
           : unpriced.length
-            ? `SKU ${unpriced.join(", ")} ${unpriced.length > 1 ? "have" : "has"} no price. Add the price in the sheet and upload it again, then approve`
+            ? `${one ? "SKU" : "SKUs"} ${unpriced.join(", ")} ${one ? "has" : "have"} no price. Add ${one ? "it" : "them"} with Edit, or upload a sheet that has ${one ? "it" : "them"}, then approve`
             : null;
       return [id, { title: product.title, status: product.status, reason }];
     }),

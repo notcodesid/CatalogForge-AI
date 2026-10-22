@@ -20,12 +20,18 @@ export async function GET(_request: Request, ctx: RouteContext<"/api/products/[i
   await connection();
   const { id } = await ctx.params;
   if (!z.uuid().safeParse(id).success) return notFound();
-  const product = await productDetail(getDb(), id);
-  return product ? Response.json(product) : notFound();
+  try {
+    const product = await productDetail(getDb(), id);
+    return product ? Response.json(product) : notFound();
+  } catch (err) {
+    // Logged with its stack, and the review screen gets a message instead of an empty 500
+    return failed(err);
+  }
 }
 
-// PATCH /api/products/:id  { "title"?, "descriptionHtml"?, "category"?, "tags"?, "attributes"? }
-// The merchant's own edits. The AI never overwrites them; only the changed fields are translated again
+// PATCH /api/products/:id  { "title"?, "descriptionHtml"?, "category"?, "tags"?, "attributes"?, "prices"?: { [sku]: "21.50" } }
+// The merchant's own edits. The AI never overwrites them, a re-upload never changes their prices; only the changed
+// fields are translated again
 export async function PATCH(request: Request, ctx: RouteContext<"/api/products/[id]">) {
   const { id } = await ctx.params;
   if (!z.uuid().safeParse(id).success) return notFound();

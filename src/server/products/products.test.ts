@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { and, eq, sql } from "drizzle-orm";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mockProvider, resetMockState } from "@/server/ai/mock";
 import { createDb } from "@/server/db/client";
-import { photos, products, translationState } from "@/server/db/schema";
+import { imports, photos, products, translationState } from "@/server/db/schema";
 import { env } from "@/server/env";
 import { runBuildBatch } from "@/server/pipeline/build";
 import { runParseImport } from "@/server/pipeline/run-parse-import";
@@ -15,7 +15,7 @@ import { createTestImport, setShopLanguages } from "@/test/fixtures";
 import { testDatabaseUrl } from "@/test/global-setup";
 import { productDetail } from "./detail";
 import { listProducts, productListQuery } from "./list";
-import { approveProduct, bulkApprove, deleteProduct, editProduct, productEdit, restoreProduct, sendBack } from "./review";
+import { approveProduct, bulkApprove, deleteProduct, editProduct, productEdit, restoreProduct, sendBack, typedPriceCents } from "./review";
 
 const db = createDb(testDatabaseUrl());
 let boss: PgBoss;
@@ -240,13 +240,105 @@ describe("editProduct", () => {
   });
 });
 
+describe("editProduct prices", () => {
+  const variant = (product: { variants: { sku: string }[] }, sku: string) => product.variants.find((v) => v.sku === sku);
+
+  it("lets the merchant add a missing price, which a re-upload keeps, and the product can then be approved", async () => {
+    await importAndBuild(SAMPLE);
+    const planter = await byTitle("Hand-thrown Terracotta Planter");
+    expect(variant((await productDetail(db, planter.id))!, "TC-PL-30")).toMatchObject({ priceCents: null, priceCurrency: "EUR", priceSetByHand: false });
+
+    const edited = await editProduct(db, boss, planter.id, { prices: { "TC-PL-30": " 29,5 " } });
+    expect(edited.changed).toEqual(["prices"]);
+    expect(variant(edited.product, "TC-PL-30")).toMatchObject({ priceCents: 2950, currency: "EUR", priceSetByHand: true });
+    // The problem it solves is gone, the others stay. Editing isn't approving
+    expect(edited.product.reviewReasons).not.toContain("Row 3: No price");
+    expect(edited.product.reviewReasons).toEqual(planter.reviewReason!.split("; ").filter((r) => r !== "Row 3: No price"));
+    expect(edited.product.status).toBe("needs_review");
+    // The same price again changes nothing
+    expect((await editProduct(db, boss, planter.id, { prices: { "TC-PL-30": "29.50" } })).changed).toEqual([]);
+
+    // The supplier's sheet comes back with its own price for it: the merchant's stays
+    await importAndBuild(SAMPLE, encode(readFileSync(SAMPLE, "utf8").replace("3.1kg,,,", "3.1kg,31.00,EUR,")));
+    expect(variant((await productDetail(db, planter.id))!, "TC-PL-30")).toMatchObject({ priceCents: 2950, priceSetByHand: true });
+    expect((await approveProduct(db, planter.id)).product.status).toBe("approved");
+  });
+
+  it("settles a SKU whose rows had different prices, and drops that problem", async () => {
+    await importAndBuild(SAMPLE);
+    const mug = await byTitle("Stoneware Mug");
+    const conflict = (r: string) => r.includes("same SKU MG-01 but different prices");
+    expect(mug.reviewReason!.split("; ").some(conflict)).toBe(true);
+
+    const edited = await editProduct(db, boss, mug.id, { prices: { "MG-01": "14" } });
+    expect(edited.product.variants).toEqual([expect.objectContaining({ sku: "MG-01", priceCents: 1400, currency: "EUR", priceSetByHand: true })]);
+    expect(edited.product.reviewReasons.some(conflict)).toBe(false);
+  });
+
+  it("drops 'still has no price' for a variant an earlier sheet left without one", async () => {
+    await importAndBuild(SAMPLE);
+    await importAndBuild("prices.csv", encode("SKU,Name,Price\nTC-PL-20,Terracotta Planter,26.00\n"));
+    const planter = await byTitle("Hand-thrown Terracotta Planter");
+    expect(planter.reviewReason).toContain("SKU TC-PL-30 still has no price (from an earlier upload)");
+    const edited = await editProduct(db, boss, planter.id, { prices: { "TC-PL-30": "30" } });
+    expect(edited.product.reviewReasons.join("; ")).not.toContain("TC-PL-30");
+  });
+
+  it("saves a typed price in the variant's currency, else the one its other variants use, else the import's default", async () => {
+    const importId = await importAndBuild(SAMPLE);
+    await db.update(imports).set({ defaultCurrency: "GBP" }).where(eq(imports.id, importId));
+
+    // Its other sizes are in euros
+    const planter = await byTitle("Hand-thrown Terracotta Planter");
+    const priced = await editProduct(db, boss, planter.id, { prices: { "TC-PL-30": "30", "TC-PL-20": "26" } });
+    expect(priced.product.variants.map((v) => [v.sku, v.priceCents, v.currency])).toEqual([
+      ["TC-PL-20", 2600, "EUR"],
+      ["TC-PL-30", 3000, "EUR"],
+      ["TC-PL-40", 3990, "EUR"],
+    ]);
+
+    // A product of its own with no price ("on request"): the import's default currency. Zero is a price
+    const candle = await byTitle("Scented Soy Candle");
+    const free = await editProduct(db, boss, candle.id, { prices: { "CN-SOY-02": "0" } });
+    expect(free.product.variants).toEqual([expect.objectContaining({ priceCents: 0, currency: "GBP", priceCurrency: "GBP" })]);
+  });
+
+  it("refuses a price it can't read, with the reason", async () => {
+    expect(typedPriceCents("A-1", "21.50")).toBe(2150);
+    expect(typedPriceCents("A-1", "21,5")).toBe(2150);
+    expect(typedPriceCents("A-1", " 7 ")).toBe(700);
+    expect(typedPriceCents("A-1", "1000000")).toBe(100_000_000);
+    expect(() => typedPriceCents("A-1", " ")).toThrow("Enter a price for SKU A-1, like 21.50");
+    expect(() => typedPriceCents("A-1", "-5")).toThrow("The price of SKU A-1 can't be negative");
+    expect(() => typedPriceCents("A-1", "21.505")).toThrow("The price of SKU A-1 can have at most 2 decimals");
+    expect(() => typedPriceCents("A-1", "1000000.01")).toThrow("The price of SKU A-1 can be at most 1,000,000");
+    for (const text of ["abc", "€5", "1.000,50", "21.", "1e3"]) {
+      expect(() => typedPriceCents("A-1", text)).toThrow("The price of SKU A-1 should be a number, like 21.50");
+    }
+    // Text only: a JSON number would be a float
+    expect(productEdit.safeParse({ prices: { "A-1": 21.5 } }).success).toBe(false);
+
+    await importAndBuild("bench.csv", encode("SKU,Name,Price\nA-1,Garden Bench,120\n"));
+    const [product] = await db.select().from(products);
+    const refused = (prices: Record<string, string>) =>
+      editProduct(db, boss, product.id, { title: "Oak Bench", prices }).then(
+        () => null,
+        (e: { status: number; message: string }) => [e.status, e.message],
+      );
+    expect(await refused({ "B-9": "5" })).toEqual([400, "SKU B-9 isn't a variant of this product"]);
+    expect(await refused({ "A-1": "5,555" })).toEqual([400, "The price of SKU A-1 can have at most 2 decimals"]);
+    // Nothing was saved, not even the title sent with it
+    expect((await productDetail(db, product.id))!).toMatchObject({ title: "Garden Bench", variants: [expect.objectContaining({ priceCents: 12000 })] });
+  });
+});
+
 describe("approving and sending back", () => {
   it("approves only a product a shopper can buy", async () => {
     await importAndBuild(SAMPLE);
     const planter = await byTitle("Hand-thrown Terracotta Planter");
     await expect(approveProduct(db, planter.id)).rejects.toMatchObject({
       status: 409,
-      message: "SKU TC-PL-30 has no price. Add the price in the sheet and upload it again, then approve",
+      message: "SKU TC-PL-30 has no price. Add it with Edit, or upload a sheet that has it, then approve",
     });
 
     const bowls = await byTitle("Bamboo Bowl Set");
@@ -298,7 +390,7 @@ describe("approving and sending back", () => {
     expect(result.approved).toBe(1);
     expect(result.alreadyApproved).toBe(0);
     expect(result.skipped).toEqual([
-      { id: planter.id, title: "Hand-thrown Terracotta Planter", reason: "SKU TC-PL-30 has no price. Add the price in the sheet and upload it again, then approve" },
+      { id: planter.id, title: "Hand-thrown Terracotta Planter", reason: "SKU TC-PL-30 has no price. Add it with Edit, or upload a sheet that has it, then approve" },
       { id: can.id, title: "Watering Can", reason: "This product is deleted. Restore it first" },
       { id: missing, title: null, reason: "Product not found" },
     ]);
