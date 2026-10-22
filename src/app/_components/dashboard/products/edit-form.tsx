@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { CATEGORIES } from "@/server/ai/taxonomy";
 import { buttonClasses, focusClasses } from "../ui";
 import { type EditResult, errorMessage, type ProductDetail, sendJson } from "./api";
-import { categoryGroups, humanize, tagsFromText, tagsToText } from "./view";
+import { categoryGroups, humanize, sheetSays, tagsFromText, tagsToText } from "./view";
 
 const inputClasses = `w-full rounded-md border border-border bg-background px-3 py-2 text-sm ${focusClasses}`;
 
@@ -154,6 +154,7 @@ export function EditForm({ product, onSaved, onCancel }: { product: ProductDetai
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-mono text-xs">{v.sku}</p>
                   {options && <p className="truncate text-xs text-muted-foreground">{options}</p>}
+                  {sheetSays(v) && <p className="text-xs text-warning">{sheetSays(v)}</p>}
                 </div>
                 <div className="w-28 shrink-0">
                   <input

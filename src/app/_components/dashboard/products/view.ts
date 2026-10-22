@@ -1,6 +1,6 @@
 import { formatPrice } from "../format";
 import type { Tone } from "../ui";
-import type { ProductRow, ProductStatus, TranslatedField } from "./api";
+import type { ProductRow, ProductStatus, TranslatedField, Variant } from "./api";
 import { CONFIDENCE_THRESHOLD } from "@/server/ai/confidence";
 
 // The Products tab's view (filters, sort, page) lives in the address bar, so it survives a reload and can be
@@ -27,6 +27,8 @@ export type ListView = {
   category: string;
   importId: string;
   lowConfidence: boolean;
+  // Approved products with a new version of their listing waiting
+  updateWaiting: boolean;
   deleted: boolean;
 };
 
@@ -43,6 +45,7 @@ export const DEFAULT_VIEW: ListView = {
   category: "",
   importId: "",
   lowConfidence: false,
+  updateWaiting: false,
   deleted: false,
 };
 
@@ -64,6 +67,7 @@ export function readView(params: URLSearchParams): ListView {
     category: (params.get("category") ?? "").slice(0, 300),
     importId: UUID.test(importId) ? importId : "",
     lowConfidence: params.get("low") === "1",
+    updateWaiting: params.get("update") === "1",
     deleted: params.get("deleted") === "1",
   };
 }
@@ -76,6 +80,7 @@ export function viewToSearch(view: ListView): string {
   if (view.category) p.set("category", view.category);
   if (view.importId) p.set("import", view.importId);
   if (view.lowConfidence) p.set("low", "1");
+  if (view.updateWaiting) p.set("update", "1");
   if (view.deleted) p.set("deleted", "1");
   if (view.sort !== DEFAULT_VIEW.sort) p.set("sort", view.sort);
   if (view.order !== defaultOrder(view.sort)) p.set("order", view.order);
@@ -94,6 +99,7 @@ export function viewToApiQuery(view: ListView): string {
   if (view.importId) p.set("importId", view.importId);
   // "Low confidence" = a field under the review threshold
   if (view.lowConfidence) p.set("maxConfidence", String(REVIEW_THRESHOLD - 1));
+  if (view.updateWaiting) p.set("updateWaiting", "true");
   if (view.deleted) p.set("deleted", "true");
   return p.toString();
 }
@@ -112,7 +118,8 @@ export function toggleSort(view: ListView, sort: Sort): ListView {
   return view.sort === sort ? withChange(view, { order: view.order === "asc" ? "desc" : "asc" }) : withChange(view, { sort });
 }
 
-export const hasFilters = (view: ListView) => Boolean(view.search || view.status.length || view.category || view.importId || view.lowConfidence || view.deleted);
+export const hasFilters = (view: ListView) =>
+  Boolean(view.search || view.status.length || view.category || view.importId || view.lowConfidence || view.updateWaiting || view.deleted);
 
 export const PRODUCT_STATUS_LABEL: Record<ProductStatus, { label: string; tone: Tone }> = {
   needs_review: { label: "Needs review", tone: "warning" },
@@ -142,6 +149,15 @@ export function priceRange(row: Pick<ProductRow, "minPriceCents" | "maxPriceCent
   const min = formatPrice(row.minPriceCents, row.currency);
   if (row.maxPriceCents === null || row.maxPriceCents === row.minPriceCents) return min;
   return `${min} – ${formatPrice(row.maxPriceCents, row.currency)}`;
+}
+
+// "Sheet says €34.00" next to a price the merchant typed, when the supplier's sheet now gives a different one (theirs
+// stays until they change it). Null otherwise
+export function sheetSays(variant: Pick<Variant, "priceSetByHand" | "priceCents" | "currency" | "sheetPriceCents" | "sheetCurrency">): string | null {
+  if (!variant.priceSetByHand || variant.sheetPriceCents === null) return null;
+  if (variant.sheetPriceCents === variant.priceCents && variant.sheetCurrency === variant.currency) return null;
+  const price = formatPrice(variant.sheetPriceCents, variant.sheetCurrency);
+  return price && `Sheet says ${price}`;
 }
 
 // "Home & Garden > Kitchen & Dining > Kitchen Tools" -> "Kitchen Tools", the part that says the most

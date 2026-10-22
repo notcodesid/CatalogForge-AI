@@ -10,6 +10,7 @@ import {
   hasFilters,
   priceRange,
   readView,
+  sheetSays,
   tagsFromText,
   textFromEarlierFile,
   toggleSort,
@@ -27,13 +28,14 @@ describe("the view in the address bar", () => {
   });
 
   it("survives a round trip through the address", () => {
-    const view = read("q=planter&status=needs_review,ready&category=Home+%26+Garden&import=0c52ef82-12c8-40d9-aa2e-eaf649854bf3&low=1&sort=confidence&pageSize=50&page=3");
+    const view = read("q=planter&status=needs_review,ready&category=Home+%26+Garden&import=0c52ef82-12c8-40d9-aa2e-eaf649854bf3&low=1&update=1&sort=confidence&pageSize=50&page=3");
     expect(view).toMatchObject({
       search: "planter",
       status: ["needs_review", "ready"],
       category: "Home & Garden",
       importId: "0c52ef82-12c8-40d9-aa2e-eaf649854bf3",
       lowConfidence: true,
+      updateWaiting: true,
       sort: "confidence",
       order: "asc",
       pageSize: 50,
@@ -50,7 +52,7 @@ describe("the view in the address bar", () => {
   });
 
   it("turns the view into the API's query, with low confidence meaning under the review threshold", () => {
-    const query = new URLSearchParams(viewToApiQuery(withChange(DEFAULT_VIEW, { lowConfidence: true, deleted: true, search: "mug" })));
+    const query = new URLSearchParams(viewToApiQuery(withChange(DEFAULT_VIEW, { lowConfidence: true, updateWaiting: true, deleted: true, search: "mug" })));
     expect(Object.fromEntries(query)).toEqual({
       page: "1",
       pageSize: "25",
@@ -58,6 +60,7 @@ describe("the view in the address bar", () => {
       order: "desc",
       search: "mug",
       maxConfidence: "69",
+      updateWaiting: "true",
       deleted: "true",
     });
   });
@@ -101,6 +104,15 @@ describe("prices and categories", () => {
     expect(groups.find((g) => g.top === "Home & Garden")?.children).toContain("Home & Garden > Kitchen & Dining > Kitchen Tools");
     expect(groups.find((g) => g.top === "Other")?.children).toEqual([]);
     expect(categoryLeaf("Home & Garden > Kitchen & Dining > Kitchen Tools")).toBe("Kitchen Tools");
+  });
+
+  it("shows the supplier's price next to one the merchant typed, only when it's different", () => {
+    const variant = { priceSetByHand: true, priceCents: 3200, currency: "EUR", sheetPriceCents: 3400, sheetCurrency: "EUR" };
+    expect(sheetSays(variant)).toBe("Sheet says €34.00");
+    expect(sheetSays({ ...variant, sheetPriceCents: 3200 })).toBeNull();
+    expect(sheetSays({ ...variant, sheetPriceCents: null, sheetCurrency: null })).toBeNull();
+    // A price from the sheet is the sheet's price
+    expect(sheetSays({ ...variant, priceSetByHand: false })).toBeNull();
   });
 });
 

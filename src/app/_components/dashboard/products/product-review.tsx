@@ -6,9 +6,10 @@ import { ApiError, getJson, postJson } from "../api";
 import { timeAgo } from "../format";
 import { buttonClasses, ErrorState, focusClasses, linkClasses, Skeleton } from "../ui";
 import { errorMessage, type ProductDetail, sendJson } from "./api";
-import { ConfidenceBadge, StatusBadge, TranslationChips } from "./bits";
+import { ConfidenceBadge, StatusBadge, TranslationChips, UpdateWaitingBadge } from "./bits";
 import { EditForm } from "./edit-form";
 import { ListingPanel } from "./listing-panel";
+import { NewVersionPanel } from "./new-version-panel";
 import { SupplierPanel } from "./supplier-panel";
 import { TranslationsPanel } from "./translations-panel";
 
@@ -17,7 +18,8 @@ type Failed = { key: number; error: string; notFound: boolean };
 type Notice = { tone: "success" | "danger" | "warning"; title: string; lines?: string[] } | null;
 
 // The review screen: what the supplier sent (rows, photos) next to what the AI wrote (with how sure it was and
-// where every claim came from), the actions to edit, approve, send back or delete it, and its translations
+// where every claim came from), the actions to edit, approve, send back or delete it, and its translations. A new
+// version the AI wrote for an approved product is shown above, next to the listing in the shop
 export function ProductReview({ id }: { id: string }) {
   const [nonce, setNonce] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -82,7 +84,18 @@ export function ProductReview({ id }: { id: string }) {
         onError={(message) => setNotice({ tone: "danger", title: message })}
       />
       {notice && <NoticeBox notice={notice} onClose={() => setNotice(null)} />}
-      {product.status === "needs_review" && product.reviewReasons.length > 0 && <ReviewReasons reasons={product.reviewReasons} />}
+      {product.reviewReasons.length > 0 && <ReviewReasons reasons={product.reviewReasons} approved={product.status === "approved"} />}
+      {product.newVersion && !product.deletedAt && (
+        <NewVersionPanel
+          product={product}
+          disabled={editing}
+          onChanged={(next, message) => {
+            show(next);
+            setNotice({ tone: "success", title: message });
+          }}
+          onError={(message) => setNotice({ tone: "danger", title: message })}
+        />
+      )}
 
       {/* grid-cols-1, not the default: a wide variants table scrolls in its box instead of widening the page */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -194,6 +207,7 @@ function Header({
           <h1 className="break-words text-2xl font-semibold tracking-tight">{product.title}</h1>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
             <StatusBadge status={product.status} deleted={deleted} />
+            {product.newVersion && !deleted && <UpdateWaitingBadge />}
             <span className="inline-flex items-center gap-1">
               Least sure: <ConfidenceBadge value={product.lowestConfidence} />
             </span>
@@ -322,10 +336,12 @@ function SendBackForm({ busy, onSend, onCancel }: { busy: boolean; onSend: (reas
   );
 }
 
-function ReviewReasons({ reasons }: { reasons: string[] }) {
+// Why it needs review. For an approved product: what an upload found after it was approved (it stays in the shop)
+function ReviewReasons({ reasons, approved }: { reasons: string[]; approved: boolean }) {
   return (
     <div className="rounded-lg border border-warning/40 bg-warning-soft p-4">
-      <h2 className="text-sm font-semibold text-warning">Why it needs review</h2>
+      <h2 className="text-sm font-semibold text-warning">{approved ? "Found by an upload since you approved it" : "Why it needs review"}</h2>
+      {approved && <p className="mt-1 text-sm">It&apos;s still in the shop. Fix what needs it with Edit, or send it back to take it out.</p>}
       <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
         {reasons.map((reason, i) => (
           <li key={i} className={reason.startsWith("Sent back: ") ? "font-medium" : undefined}>

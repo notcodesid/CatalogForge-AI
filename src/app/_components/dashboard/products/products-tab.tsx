@@ -69,16 +69,35 @@ export function ProductsTab() {
 
   const [selection, setSelection] = useState<RowSelectionState>({});
   const selectedIds = Object.keys(selection).filter((id) => selection[id]);
+  // The status each picked product had in the list: the selection survives turning pages, so they aren't all on
+  // screen when "Approve selected" asks about the ones that need review
+  const [pickedStatus, setPickedStatus] = useState<Record<string, ProductStatus>>({});
+  const [confirming, setConfirming] = useState(false);
+  const select = (next: RowSelectionState) => {
+    const shown = new Map(data?.products.map((p) => [p.id, p.status]));
+    setSelection(next);
+    setPickedStatus((before) => {
+      const picked: Record<string, ProductStatus> = {};
+      for (const id of Object.keys(next)) {
+        const status = shown.get(id) ?? before[id];
+        if (next[id] && status) picked[id] = status;
+      }
+      return picked;
+    });
+    setConfirming(false);
+  };
+  const needingReview = selectedIds.filter((id) => pickedStatus[id] === "needs_review").length;
   const [bulk, setBulk] = useState<{ status: "idle" } | { status: "working" } | { status: "done"; result: BulkApproveResult } | { status: "error"; message: string }>({
     status: "idle",
   });
 
-  const approve = async (body: { ids: string[] } | { importId: string }) => {
+  const approve = async (body: { ids: string[]; includeNeedsReview: boolean } | { importId: string }) => {
     setBulk({ status: "working" });
+    setConfirming(false);
     try {
       const result = await postJson<BulkApproveResult>("/api/products/bulk-approve", body);
       setBulk({ status: "done", result });
-      setSelection({});
+      select({});
       reload();
     } catch (err) {
       setBulk({ status: "error", message: err instanceof ApiError ? err.message : "Can't reach the server" });
@@ -104,10 +123,45 @@ export function ProductsTab() {
           {selectedIds.length > 0 && (
             <>
               <span className="text-sm font-medium tabular-nums">{formatCount(selectedIds.length)} selected</span>
-              <button type="button" className={buttonClasses("primary", "sm")} disabled={bulk.status === "working"} onClick={() => approve({ ids: selectedIds })}>
-                Approve selected
-              </button>
-              <button type="button" className={buttonClasses("ghost", "sm")} onClick={() => setSelection({})}>
+              {confirming ? (
+                // Products that need review are never approved without asking: the merchant may not have opened them
+                <span role="group" aria-label="Approve products that need review?" className="inline-flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning-soft px-2 py-1">
+                  <span className="text-sm">
+                    {needingReview === 1 ? "1 of these needs review. Approve it anyway?" : `${formatCount(needingReview)} of these need review. Approve them anyway?`}
+                  </span>
+                  <button
+                    type="button"
+                    className={buttonClasses("primary", "sm")}
+                    disabled={bulk.status === "working"}
+                    onClick={() => approve({ ids: selectedIds, includeNeedsReview: true })}
+                  >
+                    Approve all
+                  </button>
+                  {needingReview < selectedIds.length && (
+                    <button
+                      type="button"
+                      className={buttonClasses("secondary", "sm")}
+                      disabled={bulk.status === "working"}
+                      onClick={() => approve({ ids: selectedIds, includeNeedsReview: false })}
+                    >
+                      Only the ready ones
+                    </button>
+                  )}
+                  <button type="button" className={buttonClasses("ghost", "sm")} onClick={() => setConfirming(false)}>
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className={buttonClasses("primary", "sm")}
+                  disabled={bulk.status === "working"}
+                  onClick={() => (needingReview ? setConfirming(true) : approve({ ids: selectedIds, includeNeedsReview: false }))}
+                >
+                  Approve selected
+                </button>
+              )}
+              <button type="button" className={buttonClasses("ghost", "sm")} onClick={() => select({})}>
                 Clear selection
               </button>
             </>
@@ -160,7 +214,7 @@ export function ProductsTab() {
       )}
       {data && data.products.length > 0 && (
         <div className={`space-y-3 transition-opacity ${fresh ? "" : "opacity-60"}`} aria-busy={!fresh}>
-          <ProductTable products={data.products} view={view} selection={selection} onSelectionChange={setSelection} onViewChange={(next) => go(next)} />
+          <ProductTable products={data.products} view={view} selection={selection} onSelectionChange={select} onViewChange={(next) => go(next)} />
           <Pagination view={view} total={data.total} pages={data.pages} onChange={(next) => go(next)} />
         </div>
       )}
@@ -171,9 +225,10 @@ export function ProductsTab() {
 function BulkResult({ state, onClose }: { state: { status: string; result?: BulkApproveResult; message?: string }; onClose: () => void }) {
   if (state.status === "error") return <ErrorState title="Couldn't approve" message={state.message ?? ""} />;
   if (state.status !== "done" || !state.result) return null;
-  const { approved, alreadyApproved, skipped } = state.result;
+  const { approved, alreadyApproved, needsReview, skipped } = state.result;
+  const leftOut = skipped.length + needsReview.length > 0;
   return (
-    <div role="status" className={`space-y-2 rounded-lg border p-3 text-sm ${skipped.length ? "border-warning/40 bg-warning-soft" : "border-success/30 bg-success-soft"}`}>
+    <div role="status" className={`space-y-2 rounded-lg border p-3 text-sm ${leftOut ? "border-warning/40 bg-warning-soft" : "border-success/30 bg-success-soft"}`}>
       <div className="flex items-start justify-between gap-3">
         <p className="font-medium">
           Approved {formatCount(approved)} product{approved === 1 ? "" : "s"}
@@ -196,6 +251,23 @@ function BulkResult({ state, onClose }: { state: { status: string; result?: Bulk
           ))}
           {skipped.length > 20 && <li className="text-muted-foreground">and {formatCount(skipped.length - 20)} more</li>}
         </ul>
+      )}
+      {needsReview.length > 0 && (
+        <>
+          <p className="font-medium">
+            {needsReview.length === 1 ? "This one needs review, so it was left as it is:" : `These ${formatCount(needsReview.length)} need review, so they were left as they are:`}
+          </p>
+          <ul className="space-y-1">
+            {needsReview.slice(0, 20).map((s) => (
+              <li key={s.id}>
+                <Link href={`/products/${s.id}`} className={linkClasses}>
+                  {s.title ?? "A product"}
+                </Link>
+              </li>
+            ))}
+            {needsReview.length > 20 && <li className="text-muted-foreground">and {formatCount(needsReview.length - 20)} more</li>}
+          </ul>
+        </>
       )}
     </div>
   );
@@ -307,6 +379,15 @@ function Filters({ view, onChange }: { view: ListView; onChange: (next: ListView
           onClick={() => onChange(withChange(view, { lowConfidence: !view.lowConfidence }))}
         >
           Low confidence
+        </button>
+        <button
+          type="button"
+          aria-pressed={view.updateWaiting}
+          title="Approved products with a new version of their listing to look at"
+          className={buttonClasses(view.updateWaiting ? "primary" : "secondary", "sm")}
+          onClick={() => onChange(withChange(view, { updateWaiting: !view.updateWaiting }))}
+        >
+          Update waiting
         </button>
         <button
           type="button"

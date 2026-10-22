@@ -3,7 +3,7 @@ import { formatPrice } from "../format";
 import { Badge } from "../ui";
 import type { ProductDetail } from "./api";
 import { ConfidenceBadge } from "./bits";
-import { fieldConfidence, humanize } from "./view";
+import { fieldConfidence, humanize, sheetSays } from "./view";
 
 // The right half of the review screen: the listing as the AI wrote it (or as the merchant edited it), each field
 // with how sure the AI was, every claim with the exact words it came from, and the variants with their prices
@@ -113,6 +113,7 @@ export function ListingPanel({ product }: { product: ProductDetail }) {
                     <span className="inline-flex flex-wrap items-center gap-1.5">
                       {formatPrice(v.priceCents, v.currency) ?? <span className="font-medium text-danger">No price</span>}
                       {v.priceSetByHand && <Badge tone="info">Set by you</Badge>}
+                      {sheetSays(v) && <Badge tone="warning">{sheetSays(v)}</Badge>}
                     </span>
                   </td>
                   <td className="px-3 py-1.5 tabular-nums text-muted-foreground">{v.weightGrams !== null ? `${v.weightGrams.toLocaleString("en")} g` : "—"}</td>

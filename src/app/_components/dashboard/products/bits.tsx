@@ -15,6 +15,15 @@ export function StatusBadge({ status, deleted }: { status: ProductStatus; delete
   );
 }
 
+// An approved product whose listing the AI wrote again: the new version waits for the merchant to use it or not
+export function UpdateWaitingBadge() {
+  return (
+    <span className="whitespace-nowrap" title="The AI wrote a new version of the listing. The shop shows the approved one until you choose">
+      <Badge tone="warning">Update waiting</Badge>
+    </span>
+  );
+}
+
 // "● 84%" in the confidence colour. The word next to the colour keeps it readable without seeing colour
 export function ConfidenceBadge({ value, label }: { value: number | null | undefined; label?: string }) {
   const tone = confidenceTone(value);

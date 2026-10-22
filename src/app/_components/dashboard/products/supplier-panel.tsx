@@ -212,7 +212,8 @@ function Cleaned({ row }: { row: SourceRow }) {
 }
 
 // The supplier's text exactly as the AI saw it. Open when the sheet on file no longer has all of it: after a
-// prices-only re-upload the listing still comes from the earlier, richer file
+// prices-only re-upload the listing still comes from the earlier, richer file. While a new version waits, it's the
+// text that version was written from
 function WrittenFrom({ product }: { product: ProductDetail }) {
   const source = product.writtenFrom;
   if (!source?.sourceRows.length) return null;
@@ -223,7 +224,7 @@ function WrittenFrom({ product }: { product: ProductDetail }) {
         <span aria-hidden className="mr-1 inline-block transition-transform group-open:rotate-90">
           ›
         </span>
-        Text the listing was written from
+        {product.newVersion ? "Text the new version was written from" : "Text the listing was written from"}
         {source.language !== "en" && source.language !== "unknown" && <span className="font-normal text-muted-foreground"> · in {source.language.toUpperCase()}</span>}
       </summary>
       <div className="space-y-2 border-t border-border px-3 py-2 text-sm">

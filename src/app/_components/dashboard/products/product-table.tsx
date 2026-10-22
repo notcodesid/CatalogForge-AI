@@ -14,7 +14,7 @@ import { useEffect, useRef } from "react";
 import { formatCount, timeAgo } from "../format";
 import { focusClasses, linkClasses } from "../ui";
 import type { ProductRow } from "./api";
-import { ConfidenceBadge, StatusBadge, Thumb, TranslationChips } from "./bits";
+import { ConfidenceBadge, StatusBadge, Thumb, TranslationChips, UpdateWaitingBadge } from "./bits";
 import { categoryLeaf, type ListView, priceRange, type Sort, SORTS, toggleSort } from "./view";
 
 // Sorting and pages are done by the server (the catalog can hold 10,000+ products), so the table only renders the
@@ -51,7 +51,12 @@ const columns = column.columns([
   // On a phone, status, confidence and price are folded into the product cell (see TitleCell)
   column.accessor("status", {
     header: "Status",
-    cell: ({ row }) => <StatusBadge status={row.original.status} deleted={Boolean(row.original.deletedAt)} />,
+    cell: ({ row }) => (
+      <div className="flex flex-col items-start gap-1">
+        <StatusBadge status={row.original.status} deleted={Boolean(row.original.deletedAt)} />
+        {row.original.updateWaiting && <UpdateWaitingBadge />}
+      </div>
+    ),
     meta: { className: "hidden sm:table-cell" },
   }),
   column.accessor("lowestConfidence", {
@@ -186,7 +191,8 @@ export function ProductTable({
 }
 
 function TitleCell({ product }: { product: ProductRow }) {
-  // The first reason it needs review is the most useful line to see in the list
+  // The first reason it needs a look is the most useful line to see in the list. An approved product's reasons are
+  // what an upload found after it was approved (it stays in the shop meanwhile)
   const firstReason = product.reviewReason?.split("; ")[0];
   return (
     <div className="flex items-start gap-3 sm:min-w-48">
@@ -198,11 +204,12 @@ function TitleCell({ product }: { product: ProductRow }) {
         <p className="truncate font-mono text-xs text-muted-foreground">{product.handle}</p>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 py-0.5 sm:hidden">
           <StatusBadge status={product.status} deleted={Boolean(product.deletedAt)} />
+          {product.updateWaiting && <UpdateWaitingBadge />}
           <ConfidenceBadge value={product.lowestConfidence} />
           <span className="text-xs tabular-nums">{priceRange(product) ?? "No price"}</span>
         </div>
         {product.editedFields.length > 0 && <p className="text-xs text-muted-foreground">Edited by you</p>}
-        {firstReason && product.status === "needs_review" && (
+        {firstReason && (
           <p className="line-clamp-2 max-w-sm text-xs text-warning" title={product.reviewReason ?? undefined}>
             {firstReason}
           </p>
