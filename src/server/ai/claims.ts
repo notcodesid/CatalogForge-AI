@@ -32,6 +32,19 @@ const CLAIM_CONCEPTS: ClaimConcept[] = [
   { id: "eco-friendly", phrases: ["eco friendly", "umweltfreundlich", "ecologique", "sustainable", "nachhaltig"] },
   { id: "non-toxic", phrases: ["non toxic", "nontoxic", "ungiftig", "non toxique"] },
   { id: "hypoallergenic", phrases: ["hypoallergenic", "hypoallergen", "hypoallergenique"] },
+  { id: "oven-safe", phrases: ["oven safe", "ovenproof", "oven proof", "backofenfest", "ofenfest", "backofengeeignet", "ofengeeignet", "va au four", "allant au four"] },
+  // Care instructions are promises too: a cover that shrinks at 40 °C because the listing said "machine washable"
+  {
+    id: "machine-washable",
+    phrases: ["machine washable", "machine wash", "machine washing", "washing machine", "maschinenwaschbar", "waschmaschinenfest", "waschmaschinengeeignet", "waschmaschine", "maschinenwasche", "lavable en machine", "lavage en machine", "lave linge"],
+  },
+  {
+    id: "hand-wash",
+    phrases: ["hand wash", "handwash", "hand washing", "hand washable", "wash by hand", "handwasche", "handwaschbar", "hand waschen", "lavage a la main", "laver a la main", "lavable a la main"],
+  },
+  { id: "dry-clean", phrases: ["dry clean", "dry cleaning", "chemische reinigung", "chemisch reinigen", "nettoyage a sec", "nettoyer a sec"] },
+  { id: "wipe-clean", phrases: ["wipe clean", "wipeable", "damp cloth", "abwischbar", "abwischen", "feucht tuch", "chiffon humide"] },
+  { id: "tumble-dry", phrases: ["tumble dry", "tumble dryer", "tumble drying", "trockner", "trocknergeeignet", "seche linge"] },
 ];
 
 // Words that turn a claim around when they come just before it: "not frost-proof", "nicht frostfest"
@@ -59,19 +72,30 @@ const sameWord = (word: string, part: string) => word === part || (part.length >
 
 // Every risky claim the text makes or denies
 export function findMentions(text: string): Mention[] {
-  const words = normalizeForMatch(text).split(" ").filter(Boolean);
-  const mentions: Mention[] = [];
+  // Each word with the number of the clause it's in (clauses end at commas, full stops, brackets...)
+  const words = text.split(/[,;:.!?()[\]]/).flatMap((clause, n) =>
+    normalizeForMatch(clause)
+      .split(" ")
+      .filter(Boolean)
+      .map((word) => ({ word, clause: n })),
+  );
+  const found: { concept: ClaimConcept; phrase: string; start: number; end: number }[] = [];
   for (const concept of CLAIM_CONCEPTS) {
     for (const phrase of concept.phrases) {
       const parts = phrase.split(" ");
       for (let i = 0; i + parts.length <= words.length; i++) {
-        if (!parts.every((p, k) => sameWord(words[i + k], p))) continue;
-        const before = words.slice(Math.max(0, i - NEGATION_REACH), i);
-        mentions.push({ concept, phrase, negated: before.some((w) => NEGATIONS.has(w)) });
+        if (parts.every((p, k) => sameWord(words[i + k].word, p))) found.push({ concept, phrase, start: i, end: i + parts.length });
       }
     }
   }
-  return mentions;
+  return found.map(({ concept, phrase, start }) => {
+    // A negation that already went to a claim in an earlier clause stops there: in "not dishwasher safe, hand wash
+    // only" the "not" is about the dishwasher alone. Within one clause it reaches on: "not organic or recycled"
+    const clause = words[start].clause;
+    const used = found.filter((m) => m.end <= start && words[m.end - 1].clause < clause).map((m) => words[m.end - 1].clause);
+    const before = words.slice(Math.max(0, start - NEGATION_REACH), start).filter((w) => w.clause > Math.max(-1, ...used));
+    return { concept, phrase, negated: before.some((w) => NEGATIONS.has(w.word)) };
+  });
 }
 
 // How a claim is shown to the merchant: "fsc-certified" -> "FSC certified", "bpa-free" -> "BPA-free"

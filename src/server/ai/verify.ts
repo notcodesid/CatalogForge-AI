@@ -3,6 +3,7 @@ import { cleanDescription } from "@/server/pipeline/clean/html";
 import { cleanText } from "@/server/pipeline/clean/text";
 import { claimedConcepts, claimLabel, findMentions, normalizeForMatch } from "./claims";
 import { CONFIDENCE_THRESHOLD } from "./confidence";
+import { cleanOptionNames, type OptionNames } from "./option-names";
 import type { ProductInput } from "./prompt";
 import type { ProductDraft } from "./schema";
 import { isCategory, nearestCategory } from "./taxonomy";
@@ -13,17 +14,30 @@ export type VerifiedDraft = {
   category: string | null;
   tags: string[];
   attributes: Record<string, string>;
+  // What the variants' colour or size really is, when it isn't one: { color: "scent" } (see option-names.ts)
+  optionNames: OptionNames;
   claims: Claim[];
   confidence: Record<string, number>;
   // Why this product needs a person to look at it. Empty = the AI's work passed every check
   reviewReasons: string[];
 };
 
+// What the AI is told not to flag, because pipeline/group.ts and build.ts check it with the exact rows and values.
+// Seen in a real run: "Both variants share SKU CW-15..." on a product with one variant, next to our own clearer
+// "Rows 10 and 11 have the same SKU CW-15 but different prices (€32.00 vs €36.00)"
+const CHECKED_BY_CODE = /\b(?:skus?|prices?|priced|pricing|variants?|duplicates?|duplicated)\b/i;
+
 // "We", "our", "us" (not "US", the country)
 const FIRST_PERSON = /\b(?:[Ww]e|[Oo]urs?|us)\b/;
 
 // Colour and size come from our own cleaning, per variant. The AI doesn't get to set them
 const FACT_ATTRIBUTES = new Set(["color", "colour", "size", "price", "sku", "weight"]);
+
+// Measurements ("length", "pot diameter", "dimensions (cm)"). When the variants have sizes, each variant has its
+// own: one value for the whole product repeats it ("length: 10000 cm" on twine whose size says the same) or is
+// wrong for all variants but one ("45 x 45 cm" on a cover that also comes in 50 x 50)
+const MEASUREMENT = /\b(?:sizes?|length|width|height|depth|dimensions?|measurements?|diameter|radius|circumference|capacity|volume)\b/;
+const isMeasurement = (name: string) => MEASUREMENT.test(normalizeForMatch(name));
 
 type Cell = { row: number; column: string; text: string; normalized: string };
 
@@ -138,11 +152,17 @@ export function verifyDraft(draft: ProductDraft, input: ProductInput): VerifiedD
     .filter((t) => t.length <= 40)
     .slice(0, 10);
 
+  // A colour column that holds scents makes "scent" a per-variant fact too
+  const optionNames = cleanOptionNames(draft.option_names, input.variants);
+  const variantFacts = new Set([...FACT_ATTRIBUTES, ...Object.values(optionNames)]);
+  // A size column that really holds something else (pack counts, scents) isn't a measurement
+  const sizeIsMeasurement = !optionNames.size || isMeasurement(optionNames.size);
+  const hasSizes = input.variants.some((v) => (v.size && sizeIsMeasurement) || Object.keys(v.options).some(isMeasurement));
   const attributes: Record<string, string> = {};
   for (const [name, value] of Object.entries(draft.attributes)) {
     const key = cleanText(name)?.toLowerCase();
     const text = cleanText(value);
-    if (key && text && !FACT_ATTRIBUTES.has(key)) attributes[key] = text;
+    if (key && text && !variantFacts.has(key) && !(hasSizes && isMeasurement(key))) attributes[key] = text;
   }
 
   // Claims: the quote must really be in the supplier's text, and a risky claim must be what that text says,
@@ -175,17 +195,27 @@ export function verifyDraft(draft: ProductDraft, input: ProductInput): VerifiedD
     claims.push({ text: claim.text, source: `row ${found.row}, column ${found.column}`, quote: claim.quote });
   }
 
+  // Everything the shop shows that can make a claim. Attribute values too: "care: dry clean only" is a promise
+  const fields = [
+    { says: "The title says", text: title },
+    { says: "The description says", text: description?.text ?? "" },
+    ...Object.entries(attributes).map(([key, value]) => ({ says: `The ${key.replace(/;/g, ",")} attribute says`, text: value })),
+    { says: "The tags say", text: tags.join(". ") },
+  ];
+
   // The listing itself must not make risky claims the supplier never made, even outside the claims list
-  const written = `${title}. ${description?.text ?? ""}`;
-  const extraClaims = findMentions(written).filter((m) => !m.negated && !sourceClaims.has(m.concept.id));
-  for (const id of new Set(extraClaims.map((m) => m.concept.id))) {
-    const phrase = extraClaims.find((m) => m.concept.id === id)!.phrase;
-    reasons.push(`The description says "${phrase}", but the supplier never says that`);
+  const reported = new Set<string>();
+  for (const field of fields) {
+    for (const m of findMentions(field.text)) {
+      if (m.negated || sourceClaims.has(m.concept.id) || reported.has(m.concept.id)) continue;
+      reported.add(m.concept.id);
+      reasons.push(`${field.says} "${m.phrase}", but the supplier never says that`);
+    }
   }
 
   // The listing says "handmade", the supplier says so too, but the AI left it out of the claims: add it with its
   // source, so every claim the shop makes points back to the supplier's words
-  for (const id of claimedConcepts(written)) {
+  for (const id of claimedConcepts(fields.map((f) => f.text).join(". "))) {
     if (!sourceClaims.has(id) || claims.some((c) => claimedConcepts(c.text).has(id))) continue;
     for (const cell of cells) {
       const sentence = cell.text.split(/(?<=[.!?])\s+/).find((s) => claimedConcepts(s).has(id));
@@ -211,13 +241,27 @@ export function verifyDraft(draft: ProductDraft, input: ProductInput): VerifiedD
     reasons.push(`The description adds details the supplier never gave: ${quoted.join(" and ")}`);
   }
 
+  // Confidence only for what the listing shows. The merchant can't fix a doubt about an attribute that was dropped,
+  // and a score for "attributes" when there are none means "nothing to say" (seen in a real run: 0%), not a doubt
+  const shown = (field: string) => {
+    if (field === "attributes") return Object.keys(attributes).length > 0;
+    if (!field.startsWith("attributes.")) return true;
+    const attribute = cleanText(field.slice("attributes.".length))?.toLowerCase();
+    return attribute !== undefined && attribute in attributes;
+  };
   const confidence: Record<string, number> = {};
-  for (const [field, value] of Object.entries(draft.confidence)) confidence[field] = Math.round(Math.min(100, Math.max(0, value)));
+  for (const [field, value] of Object.entries(draft.confidence)) {
+    if (shown(field)) confidence[field] = Math.round(Math.min(100, Math.max(0, value)));
+  }
   const low = Object.entries(confidence).filter(([, value]) => value < CONFIDENCE_THRESHOLD);
   if (low.length) reasons.push(`The AI isn't sure about: ${low.map(([field, value]) => `${field} (${value}%)`).join(", ")}`);
 
-  // Semicolons separate our list of reasons, so the AI's own reason mustn't contain any
-  if (draft.needs_review) reasons.push(draft.review_reason?.trim().replace(/\s*;\s*/g, ", ") || "The AI flagged this product as unclear");
+  // Semicolons separate our list of reasons, so the AI's own reason mustn't contain any. A reason about prices, SKUs
+  // or variants is dropped: our own checks give those with the exact rows and values
+  if (draft.needs_review) {
+    const reason = draft.review_reason?.trim().replace(/\s*;\s*/g, ", ") || "The AI flagged this product as unclear";
+    if (!CHECKED_BY_CODE.test(reason)) reasons.push(reason);
+  }
 
-  return { title, descriptionHtml, category, tags, attributes, claims, confidence, reviewReasons: reasons };
+  return { title, descriptionHtml, category, tags, attributes, optionNames, claims, confidence, reviewReasons: reasons };
 }
