@@ -12,6 +12,7 @@ import type { BuildBatchJob } from "@/server/queue/queues";
 import { createTestImport, setShopLanguages } from "@/test/fixtures";
 import { testDatabaseUrl } from "@/test/global-setup";
 import { OUT_OF_CREDIT } from "@/server/ai/ask";
+import { PROMPT_VERSION } from "@/server/ai/prompt";
 import { runBuildBatch } from "./build";
 import { runParseImport } from "./run-parse-import";
 
@@ -79,8 +80,113 @@ describe("the AI step", () => {
       ["TC-PL-40", 3990, "EUR"],
     ]);
 
+    // MG-01 is on two rows with different prices: we never pick one, the merchant enters it in Edit
+    const mug = await productByTitle("Stoneware Mug");
+    expect(mug.reviewReason).toContain("Rows 4 and 5 have the same SKU MG-01 but different prices (€12.50 vs €14.00). Enter the right one with Edit");
+    expect(await db.select().from(variants).where(eq(variants.productId, mug.id))).toEqual([
+      expect.objectContaining({ sku: "MG-01", priceCents: null, currency: null }),
+    ]);
+
     const bowls = await productByTitle("Bamboo Bowl Set");
     expect(bowls.status).toBe("ready");
+  });
+
+  it("saves a SKU that's on two rows with different prices without a price, with the first row's other values", async () => {
+    const csv = "SKU,Name,Weight,Price,Currency\nCW-15,Copper Watering Can,1.1 kg,32.00,EUR\nCW-15,Copper Watering Can,1.3 kg,36.00,EUR\n";
+    await importAndBuild("cans.csv", new TextEncoder().encode(csv));
+    const can = await productByTitle("Copper Watering Can");
+    expect(can.status).toBe("needs_review");
+    expect(can.reviewReason).toContain("Rows 2 and 3 have the same SKU CW-15 but different prices (€32.00 vs €36.00). Enter the right one with Edit");
+    expect(can.reviewReason).toContain("Rows 2 and 3 have the same SKU CW-15 but different weight (1100 g vs 1300 g)");
+    const saved = await db.select().from(variants).where(eq(variants.productId, can.id));
+    expect(saved.map((v) => [v.sku, v.priceCents, v.currency, v.weightGrams])).toEqual([["CW-15", null, null, 1100]]);
+
+    // Rows without a SKU are the same variant when their options are the same
+    await importAndBuild("benches.csv", new TextEncoder().encode("Name,Price\nGarden Bench,120\nGarden Bench,130\n"));
+    const bench = await productByTitle("Garden Bench");
+    expect(bench.reviewReason).toContain("Rows 2 and 3 have no SKU and the same size, colour and options but different prices (€120.00 vs €130.00)");
+    expect(await db.select().from(variants).where(eq(variants.productId, bench.id))).toEqual([expect.objectContaining({ priceCents: null })]);
+  });
+
+  it("writes a listing again when it was written with older instructions, even if the sheet hasn't changed", async () => {
+    await importAndBuild(SAMPLE);
+    await db.update(products).set({ promptVersion: "build-old" });
+    // Same sheet: without the version check every product would be kept as it is (nothing new to say)
+    const again = await importAndBuild(SAMPLE);
+    expect(again.queued.length).toBeGreaterThan(0);
+    expect(again.queued.every((j) => !j.keepListing)).toBe(true);
+    expect(new Set((await db.select().from(products)).map((p) => p.promptVersion))).toEqual(new Set([PROMPT_VERSION]));
+  });
+
+  it("saves a colour column that really holds scents as 'scent', and keeps that name when a price list comes back", async () => {
+    const csv = [
+      "SKU,Parent SKU,Name,Description,Colour,Price,Currency",
+      "SC-LAV,SC,Soy Candle,Soy wax candle in an amber glass jar.,Lavender,18.00,EUR",
+      "SC-CED,SC,Soy Candle,Soy wax candle in an amber glass jar.,Cedar,18.00,EUR",
+    ].join("\n");
+    await importAndBuild("candles.csv", new TextEncoder().encode(csv));
+    const candle = await productByTitle("Soy Candle");
+    expect(candle.optionNames).toEqual({ color: "scent" });
+    const options = async () => Object.fromEntries((await db.select().from(variants).where(eq(variants.productId, candle.id))).map((v) => [v.sku, v.options]));
+    expect(await options()).toEqual({ "SC-LAV": { scent: "lavender" }, "SC-CED": { scent: "cedar" } });
+
+    // A price list for the same SKUs: no AI call, and the variants don't get a "color" back next to "scent"
+    const second = await importAndBuild("prices.csv", new TextEncoder().encode("SKU,Colour,Price,Currency\nSC-LAV,Lavender,19.00,EUR\nSC-CED,Cedar,19.00,EUR\n"));
+    expect(second.queued.map((j) => j.keepListing)).toEqual([true]);
+    expect(await options()).toEqual({ "SC-LAV": { scent: "lavender" }, "SC-CED": { scent: "cedar" } });
+  });
+
+  it("keeps a price the merchant set by hand when the sheet comes back, and drops the sheet's price problems for it", async () => {
+    await importAndBuild(SAMPLE);
+    // As if typed in Edit (see products.test.ts)
+    await db.update(variants).set({ priceCents: 2950, currency: "EUR", priceSetByHand: true }).where(eq(variants.sku, "TC-PL-30"));
+    const prices = async () => Object.fromEntries((await db.select().from(variants).where(sql`${variants.sku} like 'TC-PL-%'`)).map((v) => [v.sku, v.priceCents]));
+
+    // A new price for TC-PL-20 only (the listing is kept). Row 3 still has no price, but the merchant's counts
+    const sheet = readFileSync(SAMPLE, "utf8").replaceAll('"24,99 €"', '"25,99 €"');
+    const second = await importAndBuild(SAMPLE, new TextEncoder().encode(sheet));
+    expect(second.queued.map((j) => j.keepListing)).toEqual([true]);
+    expect(await prices()).toEqual({ "TC-PL-20": 2599, "TC-PL-30": 2950, "TC-PL-40": 3990 });
+    expect((await productByTitle("Hand-thrown Terracotta Planter")).reviewReason ?? "").not.toContain("No price");
+
+    // New text (the AI writes the listing again) and the sheet's own price for TC-PL-30: the merchant's still wins
+    const rewritten = sheet.replace("3.1kg,,,", "3.1kg,31.00,EUR,").replaceAll("with drainage hole", "with a drainage hole");
+    const third = await importAndBuild(SAMPLE, new TextEncoder().encode(rewritten));
+    expect(third.queued.map((j) => j.keepListing)).toEqual([undefined]);
+    expect(await prices()).toEqual({ "TC-PL-20": 2599, "TC-PL-30": 2950, "TC-PL-40": 3990 });
+    const [handSet] = await db.select().from(variants).where(eq(variants.sku, "TC-PL-30"));
+    expect(handSet.priceSetByHand).toBe(true);
+  });
+
+  it("leaves updatedAt alone when a re-upload changes nothing about a product, and moves it when it does", async () => {
+    await importAndBuild(SAMPLE);
+    const variantTimes = async () => Object.fromEntries((await db.select().from(variants)).map((v) => [v.sku, v.updatedAt.getTime()]));
+    const variantsBefore = await variantTimes();
+
+    // The same sheet again: no variant is written
+    await importAndBuild(SAMPLE);
+    expect(await variantTimes()).toEqual(variantsBefore);
+
+    // A price list with the same price: the bowls now belong to this upload, but nothing the merchant sees changed
+    const bowls = await productByTitle("Bamboo Bowl Set");
+    const same = await importAndBuild("prices.csv", new TextEncoder().encode("SKU,Name,Price,Currency\nBW-SET,Bamboo Bowl Set,24.00,EUR\n"));
+    expect(same.queued.map((j) => j.keepListing)).toEqual([true]);
+    expect(await productByTitle("Bamboo Bowl Set")).toMatchObject({ lastImportId: same.id, updatedAt: bowls.updatedAt });
+    expect(await variantTimes()).toEqual(variantsBefore);
+
+    // A new price is a real change
+    await importAndBuild("prices.csv", new TextEncoder().encode("SKU,Name,Price,Currency\nBW-SET,Bamboo Bowl Set,26.00,EUR\n"));
+    expect((await productByTitle("Bamboo Bowl Set")).updatedAt.getTime()).toBeGreaterThan(bowls.updatedAt.getTime());
+    expect((await variantTimes())["BW-SET"]).toBeGreaterThan(variantsBefore["BW-SET"]);
+  });
+
+  // An unchanged product never reaches build.ts: planStage (run-parse-import.ts) moves it to the new upload
+  it("leaves every product's updatedAt alone when the same sheet is uploaded again", async () => {
+    await importAndBuild(SAMPLE);
+    const times = async () => Object.fromEntries((await db.select().from(products)).map((p) => [p.id, p.updatedAt.getTime()]));
+    const before = await times();
+    await importAndBuild(SAMPLE);
+    expect(await times()).toEqual(before);
   });
 
   it("keeps instructions hidden in supplier text away from the AI and out of the claims", async () => {
@@ -133,6 +239,10 @@ describe("the AI step", () => {
     const fromCache = await db.select().from(aiCalls).where(eq(aiCalls.fromCache, true));
     expect(fromCache).toHaveLength(queued.length);
     expect(await getImport(id)).toMatchObject({ status: "done" });
+    // Saved again with the same answer: nothing changed, so nothing looks just updated
+    const times = (rows: { id: string; updatedAt: Date }[]) => Object.fromEntries(rows.map((r) => [r.id, r.updatedAt.getTime()]));
+    expect(times(await db.select().from(products))).toEqual(times(productsBefore));
+    expect(times(await db.select().from(variants))).toEqual(times(variantsBefore));
   });
 
   it("makes no AI calls when the same file is uploaded again", async () => {

@@ -67,6 +67,7 @@ describe("listImports", () => {
       phase: "processing photos",
       rows: summary.rows,
       products: summary.products,
+      productOutcomes: summary.productOutcomes,
       photos: { total: 1, matched: 1, waitingToBeProcessed: 1, missing: summary.photos.missing.length, linksOverLimit: 0 },
       translations: { de: { done: 0, pending: 12, failed: 0 }, fr: { done: 0, pending: 12, failed: 0 } },
     });

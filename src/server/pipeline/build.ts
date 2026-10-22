@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNull, like, or, sql } from "drizzle-orm";
 import { askAi, type AskContext } from "@/server/ai/ask";
 import { normalizeForMatch } from "@/server/ai/claims";
+import { renameOptions, replacedOptionKeys, type OptionNames } from "@/server/ai/option-names";
 import { buildInput, buildProductInput, PROMPT_VERSION, SYSTEM_PROMPT, type ProductInput, type RowForBuild } from "@/server/ai/prompt";
 import { AiPermanentError, type AiProvider, type AiTier } from "@/server/ai/provider";
 import { AiPausedError } from "@/server/ai/rate-limit";
@@ -13,6 +14,7 @@ import { linkPhotos } from "@/server/photos/match";
 import { noteEnglishChange } from "@/server/translations/state";
 import type { BuildBatchJob } from "@/server/queue/queues";
 import { LONG_DESCRIPTION_CHARS } from "./clean/html";
+import { skuKey } from "./clean/row";
 import { nameKey } from "./group";
 import type { CleanedRow, ParseInfo } from "./types";
 
@@ -90,13 +92,13 @@ type Planned = { rowNumber: number; raw: Record<string, string>; cleaned: Cleane
 // thin file can't wipe a good listing, and they cost no AI call
 async function listingsToKeep(db: DbOrTx, groups: Map<string, Planned[]>, info: ParseInfo | null): Promise<Set<string>> {
   if (!info) return new Set();
-  type Current = { id: string; sourceInput: ProductInput | null; deletedAt: Date | null };
+  type Current = { id: string; sourceInput: ProductInput | null; promptVersion: string | null; deletedAt: Date | null };
   const keys = [...groups.keys()];
   const byKey = new Map<string, Current>();
   const bySku = new Map<string, Current>();
   for (let i = 0; i < keys.length; i += LOOKUP_CHUNK) {
     const found = await db
-      .select({ key: products.productKey, id: products.id, sourceInput: products.sourceInput, deletedAt: products.deletedAt })
+      .select({ key: products.productKey, id: products.id, sourceInput: products.sourceInput, promptVersion: products.promptVersion, deletedAt: products.deletedAt })
       .from(products)
       .where(inArray(products.productKey, keys.slice(i, i + LOOKUP_CHUNK)));
     for (const { key, ...product } of found) byKey.set(key, product);
@@ -105,7 +107,7 @@ async function listingsToKeep(db: DbOrTx, groups: Map<string, Planned[]>, info: 
   const skus = keys.filter((k) => !byKey.has(k)).flatMap((k) => groups.get(k)!.map((r) => r.cleaned?.sku).filter((s): s is string => Boolean(s)));
   for (let i = 0; i < skus.length; i += LOOKUP_CHUNK) {
     const found = await db
-      .select({ sku: variants.sku, id: products.id, sourceInput: products.sourceInput, deletedAt: products.deletedAt })
+      .select({ sku: variants.sku, id: products.id, sourceInput: products.sourceInput, promptVersion: products.promptVersion, deletedAt: products.deletedAt })
       .from(variants)
       .innerJoin(products, eq(products.id, variants.productId))
       .where(inArray(variants.sku, skus.slice(i, i + LOOKUP_CHUNK)));
@@ -117,7 +119,8 @@ async function listingsToKeep(db: DbOrTx, groups: Map<string, Planned[]>, info: 
     const rows = group.filter((r): r is RowForBuild => r.cleaned !== null);
     const owners = new Map(rows.flatMap((r) => (r.cleaned.sku && bySku.has(r.cleaned.sku) ? [bySku.get(r.cleaned.sku)!] : [])).map((p) => [p.id, p]));
     const current = byKey.get(key) ?? (owners.size === 1 ? [...owners.values()][0] : undefined);
-    if (!current?.sourceInput || current.deletedAt) continue;
+    // A listing written with older instructions is written again: better instructions are why the version changed
+    if (!current?.sourceInput || current.deletedAt || current.promptVersion !== PROMPT_VERSION) continue;
     const next = buildProductInput(key, rows, info).input;
     const hasDescription = rows.some((r) => r.cleaned.descriptionText || r.cleaned.notes);
     if (saysNothingNew(next, current.sourceInput, hasDescription)) keep.add(key);
@@ -313,12 +316,15 @@ async function askOnce(ctx: AskContext, tier: AiTier, inputs: ProductInput[], fe
 
 // ---------- Saving ----------
 
-// Problems found while cleaning and grouping, written so the merchant can find the row
-function rowReasons(rows: BuildRow[]): string[] {
+// Problems found while cleaning and grouping, written so the merchant can find the row. The sheet's price problems
+// ("No price", two rows with different prices) are left out for a variant whose price the merchant set by hand:
+// their price is the one that counts (pricedByHand holds skuKey()s)
+export function rowReasons(rows: { rowNumber: number; cleaned: CleanedRow }[], key: string, pricedByHand = new Set<string>()): string[] {
   const reasons: string[] = [];
   for (const row of [...rows].sort((a, b) => a.rowNumber - b.rowNumber)) {
+    const handPriced = pricedByHand.has(skuKey(skuOf(key, row.cleaned)));
     for (const issue of row.cleaned.issues) {
-      if (issue.severity !== "review") continue;
+      if (issue.severity !== "review" || (handPriced && issue.field === "price")) continue;
       reasons.push(/^(Rows|SKUs|Variants) /.test(issue.message) ? issue.message : `Row ${row.rowNumber}: ${issue.message}`);
     }
   }
@@ -347,6 +353,33 @@ function generatedSku(productKey: string, row: CleanedRow) {
   return `GEN-${createHash("sha256").update(productKey + options).digest("hex").slice(0, 8).toUpperCase()}`;
 }
 
+// The SKU a row's variant is saved under
+const skuOf = (productKey: string, row: CleanedRow) => row.sku ?? generatedSku(productKey, row);
+
+// JSON with object keys sorted. Postgres keeps jsonb keys in its own order, so a value read back can list them
+// differently from the same value built here
+function stableJson(value: unknown) {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v,
+  );
+}
+
+// Whether these values are already what's saved (fields in `ignore` don't count)
+function unchanged<T extends object>(saved: T, next: Partial<T>, ignore = new Set<string>()) {
+  return Object.entries(next).every(([field, value]) => ignore.has(field) || stableJson(value) === stableJson(saved[field as keyof T]));
+}
+
+// Fields that only say which file and rows last wrote a product. Every re-upload changes them, so they aren't a
+// change the merchant would see
+const BOOKKEEPING = new Set(["lastImportId", "sourceRows", "sourceHash", "sourceInput"]);
+
+// The product's "Updated" time after a save: kept when nothing the merchant sees changed (same listing, status and
+// variants), so re-uploading a sheet doesn't make every product look just changed. Given explicitly to the save's
+// last write, it also replaces the time the earlier writes put there
+function updatedAtAfter(before: Product, next: Partial<Product>, variantsChanged: boolean): Date {
+  return variantsChanged || !unchanged(before, next, BOOKKEEPING) ? new Date() : before.updatedAt;
+}
+
 async function saveProduct(
   db: Db,
   imp: { id: string; sheetFileName: string },
@@ -370,7 +403,6 @@ async function saveProduct(
     ...(truncated ? [`The description was too long, the AI only read the first ${LONG_DESCRIPTION_CHARS.toLocaleString("en")} characters`] : []),
     ...verified.reviewReasons,
   ];
-  const reasons = [...rowReasons(rows), ...contentReasons];
 
   const variantRows = rows.filter((r) => r.cleaned.role === "variant" && !r.cleaned.duplicateOfRow);
 
@@ -379,9 +411,10 @@ async function saveProduct(
     // The merchant deleted this product: a file that has it under another layout doesn't bring it back
     if (found?.product.deletedAt) return skipDeleted(tx, importId, key, pendingRows);
     const existing = found?.product;
-    if (found?.bySku && nameKey(found.product.title) !== nameKey(verified.title || found.product.title)) {
-      reasons.push(`These SKUs belonged to "${found.product.title}", which is now called "${verified.title}". Check it's the same product`);
-    }
+    const renamed =
+      found?.bySku && nameKey(found.product.title) !== nameKey(verified.title || found.product.title)
+        ? [`These SKUs belonged to "${found.product.title}", which is now called "${verified.title}". Check it's the same product`]
+        : [];
     // Fields the merchant changed by hand are never overwritten by the AI
     const edited = new Set(existing?.merchantEditedFields ?? []);
     const pick = <T>(field: string, fresh: T, current: T | undefined) => (existing && edited.has(field) ? (current as T) : fresh);
@@ -395,6 +428,7 @@ async function saveProduct(
       // With the file name: a listing can outlive its file (a later price list keeps it), so "row 2" alone is unclear
       claims: verified.claims.map((c) => ({ ...c, source: `${imp.sheetFileName}, ${c.source}` })),
       confidence: verified.confidence,
+      optionNames: verified.optionNames,
       sourceRows: rows.map((r) => r.rowNumber).sort((a, b) => a - b),
       lastImportId: importId,
       sourceHash: sourceHashFor(rows),
@@ -413,18 +447,22 @@ async function saveProduct(
             .returning({ id: products.id })
         )[0].id;
 
-    reasons.push(...(await saveVariants(tx, productId, key, variantRows)));
+    const saved = await saveVariants(tx, productId, key, variantRows, verified.optionNames, existing?.optionNames);
+    const reasons = [...rowReasons(rows, key, saved.pricedByHand), ...contentReasons, ...renamed, ...saved.problems];
     await linkPhotos(tx, importId, { productKey: key, productId });
     // New or changed English: its translations are marked to do (queued by the worker after this batch)
     await noteEnglishChange(tx, productId);
 
     // New English from the AI: an approved product needs another look before it's back in the shop
-    const status = reasons.length ? "needs_review" : "ready";
-    const reviewReason = reasons.length ? reasons.join("; ") : null;
-    await tx.update(products).set({ status, reviewReason, approvedAt: null }).where(eq(products.id, productId));
+    const status: Product["status"] = reasons.length ? "needs_review" : "ready";
+    const result = { status, reviewReason: reasons.length ? reasons.join("; ") : null, approvedAt: null };
+    await tx
+      .update(products)
+      .set({ ...result, updatedAt: existing ? updatedAtAfter(existing, { ...content, ...result }, saved.changed) : new Date() })
+      .where(eq(products.id, productId));
     await tx
       .update(importRows)
-      .set({ status: status === "ready" ? "done" : "needs_review", reason: reviewReason })
+      .set({ status: status === "ready" ? "done" : "needs_review", reason: result.reviewReason })
       .where(pendingRows);
   });
 }
@@ -449,44 +487,83 @@ async function findExisting(tx: Tx, key: string, variantRows: BuildRow[]): Promi
   return { product, bySku: true };
 }
 
-// Variants come from our cleaned rows, never from the AI. Returns what needs a person: SKUs that belong to another
-// product, and variants from an earlier upload, not in this file, that still have no price
-async function saveVariants(tx: Tx, productId: string, key: string, variantRows: BuildRow[]): Promise<string[]> {
+type SavedVariants = { problems: string[]; changed: boolean; pricedByHand: Set<string> };
+
+// Variants come from our cleaned rows, never from the AI: the AI only names what a colour or size column really
+// holds (names: { color: "scent" }; previous: the names the product had). Returns what needs a person (SKUs that
+// belong to another product, variants from an earlier upload, not in this file, that still have no price), whether
+// any variant changed, and the skuKey()s of the variants whose price the merchant set by hand
+async function saveVariants(
+  tx: Tx,
+  productId: string,
+  key: string,
+  variantRows: BuildRow[],
+  names: OptionNames = {},
+  previous: OptionNames = {},
+): Promise<SavedVariants> {
+  // Rows with the same SKU but different data (exact copies were merged while grouping) make one variant, with the
+  // first row's values. If their prices differ it gets no price: we never pick one, the merchant enters it in Edit
+  const bySku = new Map<string, CleanedRow[]>();
+  for (const { cleaned } of variantRows) {
+    const sku = skuKey(skuOf(key, cleaned));
+    bySku.set(sku, [...(bySku.get(sku) ?? []), cleaned]);
+  }
+  const wanted = [...bySku.values()].map(([c, ...others], position) => {
+    const onePrice = others.every((o) => o.priceCents === c.priceCents && o.currency === c.currency);
+    const options = { ...(c.size ? { size: c.size } : {}), ...(c.color ? { color: c.color } : {}), ...c.options } as Record<string, string>;
+    return {
+      sku: skuOf(key, c),
+      options: renameOptions(options, names),
+      // Keys saved before under another name ("color" now that it's "scent"): dropped, not left next to the new one
+      replaced: replacedOptionKeys(options, names, previous),
+      priceCents: onePrice ? c.priceCents : null,
+      currency: onePrice ? c.currency : null,
+      weightGrams: c.weightGrams,
+      position,
+    };
+  });
+
+  // This product's variants as they are now. Only written while the product is locked (see findExisting), so they
+  // can't change before we write
+  const found = wanted.length ? await tx.select().from(variants).where(inArray(variants.sku, wanted.map((v) => v.sku))) : [];
+  const current = new Map(found.filter((v) => v.productId === productId).map((v) => [v.sku, v]));
+
   const problems: string[] = [];
-  const skuOf = (c: CleanedRow) => c.sku ?? generatedSku(key, c);
-  for (const [position, row] of variantRows.entries()) {
-    const c = row.cleaned;
-    const sku = skuOf(c);
-    const options: Record<string, string> = { ...(c.size ? { size: c.size } : {}), ...(c.color ? { color: c.color } : {}), ...c.options };
-    const values = { options, priceCents: c.priceCents, currency: c.currency, weightGrams: c.weightGrams, position };
+  let changed = false;
+  for (const { sku, replaced, ...fresh } of wanted) {
+    const before = current.get(sku);
+    // A file without a colour or weight column (a price list) doesn't erase what an earlier file said, and a price
+    // the merchant set by hand stays theirs
+    const values = before
+      ? {
+          ...fresh,
+          options: { ...Object.fromEntries(Object.entries(before.options).filter(([k]) => !replaced.includes(k))), ...fresh.options },
+          weightGrams: fresh.weightGrams ?? before.weightGrams,
+          ...(before.priceSetByHand ? { priceCents: before.priceCents, currency: before.currency } : {}),
+        }
+      : fresh;
+    // Nothing new: not written, so its "updated" time stays
+    if (before && unchanged(before, values)) continue;
     const [saved] = await tx
       .insert(variants)
       .values({ productId, sku, ...values })
-      .onConflictDoUpdate({
-        target: variants.sku,
-        set: {
-          ...values,
-          // A file without a colour or weight column (a price list) doesn't erase what an earlier file said
-          options: sql`${variants.options} || excluded.options`,
-          weightGrams: sql`coalesce(excluded.weight_grams, ${variants.weightGrams})`,
-          updatedAt: new Date(),
-        },
-        setWhere: eq(variants.productId, productId),
-      })
+      .onConflictDoUpdate({ target: variants.sku, set: values, setWhere: eq(variants.productId, productId) })
       .returning({ id: variants.id });
     // The SKU is already used by a different product: don't move it, ask a person
     if (!saved) problems.push(`SKU ${sku} already belongs to another product`);
+    else changed = true;
   }
 
   // This file's own rows report their missing prices themselves
-  const inFile = new Set(variantRows.map((r) => skuOf(r.cleaned)));
+  const inFile = new Set(wanted.map((v) => v.sku));
   const unpriced = await tx
     .select({ sku: variants.sku })
     .from(variants)
     .where(and(eq(variants.productId, productId), isNull(variants.priceCents)))
     .orderBy(asc(variants.sku));
   for (const { sku } of unpriced) if (!inFile.has(sku)) problems.push(`SKU ${sku} still has no price (from an earlier upload)`);
-  return problems;
+  const pricedByHand = new Set([...current.values()].filter((v) => v.priceSetByHand).map((v) => skuKey(v.sku)));
+  return { problems, changed, pricedByHand };
 }
 
 const LISTING_KEPT = "Prices and variants updated. The listing was kept: this file has nothing new to say about the product";
@@ -517,22 +594,24 @@ async function updatePricesOnly(db: Db, importId: string, key: string, rows: Bui
     }
     if (found.product.deletedAt) return skipDeleted(tx, importId, key, pendingRows);
     const { product } = found;
-    const reasons = [...rowReasons(rows), ...product.contentReviewReasons, ...(await saveVariants(tx, product.id, key, variantRows))];
+    const saved = await saveVariants(tx, product.id, key, variantRows, product.optionNames, product.optionNames);
+    const reasons = [...rowReasons(rows, key, saved.pricedByHand), ...product.contentReviewReasons, ...saved.problems];
     await linkPhotos(tx, importId, { productKey: key, productId: product.id });
     // The listing is kept, but new variants can bring new option values (a new colour) to translate
     await noteEnglishChange(tx, product.id);
-    const status = reasons.length ? "needs_review" : product.status === "approved" ? "approved" : "ready";
+    const status: Product["status"] = reasons.length ? "needs_review" : product.status === "approved" ? "approved" : "ready";
     const reviewReason = reasons.length ? reasons.join("; ") : null;
+    const next = {
+      status,
+      reviewReason,
+      approvedAt: status === "approved" ? product.approvedAt : null,
+      sourceRows: rows.map((r) => r.rowNumber).sort((a, b) => a - b),
+      lastImportId: importId,
+      sourceHash: sourceHashFor(rows),
+    };
     await tx
       .update(products)
-      .set({
-        status,
-        reviewReason,
-        approvedAt: status === "approved" ? product.approvedAt : null,
-        sourceRows: rows.map((r) => r.rowNumber).sort((a, b) => a - b),
-        lastImportId: importId,
-        sourceHash: sourceHashFor(rows),
-      })
+      .set({ ...next, updatedAt: updatedAtAfter(product, next, saved.changed) })
       .where(eq(products.id, product.id));
     await tx
       .update(importRows)

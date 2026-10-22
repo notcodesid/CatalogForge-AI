@@ -324,11 +324,12 @@ async function planStage(ctx: AttemptContext, imp: Import) {
         .set({ status: s.status, reason: s.reason })
         .where(and(eq(importRows.importId, imp.id), eq(importRows.productKey, s.key), eq(importRows.status, "pending")));
     }
-    // Unchanged products still belong to this upload, so its product list isn't empty, and get its photos
+    // Unchanged products still belong to this upload, so its product list isn't empty, and get its photos. Nothing
+    // the merchant sees changed, so they keep their "updated" time
     for (let i = 0; i < unchanged.length; i += UPDATE_CHUNK) {
       await tx
         .update(products)
-        .set({ lastImportId: imp.id })
+        .set({ lastImportId: imp.id, updatedAt: sql`${products.updatedAt}` })
         .where(inArray(products.productKey, unchanged.slice(i, i + UPDATE_CHUNK)));
     }
     // A photo of a product the merchant deleted has nowhere to go. The rest of the unchanged ones are linked now

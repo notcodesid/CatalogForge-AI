@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { PROMPT_VERSION } from "@/server/ai/prompt";
 import { createDb } from "@/server/db/client";
 import { importRows, imports, photos, products, translationState } from "@/server/db/schema";
 import type { CleanedRow, ParseInfo } from "@/server/pipeline/types";
@@ -104,9 +105,10 @@ describe("recoverStalledImports", () => {
       blankRows: 0, format: "generic", optionColumns: [], ignoredRows: [],
     };
     const id = await stalledImport({ stage: "build", buildPlannedAt: new Date(), parseInfo });
-    // The mug's listing was written from "Mug" and "Stoneware, hand wash only". This price list only says "Mug"
+    // The mug's listing was written (with today's instructions) from "Mug" and "Stoneware, hand wash only". This price
+    // list only says "Mug"
     const sourceInput = { key: "sku:a-1", language: "en", sourceRows: [{ row: 2, cells: { Name: "Mug", Notes: "Stoneware, hand wash only" } }], variants: [] };
-    await db.insert(products).values({ productKey: "sku:a-1", handle: "mug", title: "Stoneware Mug", sourceInput });
+    await db.insert(products).values({ productKey: "sku:a-1", handle: "mug", title: "Stoneware Mug", sourceInput, promptVersion: PROMPT_VERSION });
     await db.insert(importRows).values({ importId: id, rowNumber: 2, raw: { SKU: "A-1", Name: "Mug", Price: "12" }, rowHash: "x", productKey: "sku:a-1", cleaned: cleanedRow });
     await db.execute(sql`update import_rows set updated_at = now() - interval '5 minutes'`);
 

@@ -12,7 +12,7 @@ const listSchema = z.object({
 });
 
 // GET /api/imports?limit=20&offset=0 - the upload queue, newest first, with each import's live counts: phase,
-// rows by status, photos, translation progress per language, pause and error
+// rows by status, products new or already in the catalog, photos, translation progress per language, pause and error
 export async function GET(request: Request) {
   await connection();
   const query = listSchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));

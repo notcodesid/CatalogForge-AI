@@ -1,10 +1,15 @@
 import { and, asc, count, countDistinct, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@/server/db/client";
 import { aiStatus, importRows, imports, photos, photoStatus, products, rowStatus, translationState, variants } from "@/server/db/schema";
+import { DELETED_SKIP } from "@/server/pipeline/build";
 import { translationCounts } from "@/server/translations/coverage";
 
 type RowStatus = (typeof rowStatus.enumValues)[number];
 type PhotoStatus = (typeof photoStatus.enumValues)[number];
+
+// What an import did to the catalog, per product: added it (new), updated one that was already there, skipped it
+// because the merchant deleted it, or failed. Products still being written aren't counted yet
+export type ProductOutcomes = { new: number; updated: number; deleted: number; failed: number };
 
 const photoUrls = (id: string) => ({ url: `/api/photos/${id}`, thumbnailUrl: `/api/photos/${id}?size=thumb` });
 
@@ -65,6 +70,9 @@ export async function getImportSummary(db: Db, importId: string) {
 
   const translations = await translationCounts(db, importId);
 
+  const outcomes = (await productOutcomes(db, [importId])).get(importId)!;
+  const fromFiles = imp.status === "done" && outcomes.updated > 0 ? await earlierFiles(db, importId) : [];
+
   return {
     id: imp.id,
     fileName: imp.sheetFileName,
@@ -80,6 +88,10 @@ export async function getImportSummary(db: Db, importId: string) {
     rows,
     rowsWithReviewIssues: extra.withReviewIssues,
     products: extra.products,
+    // Of those: new to the catalog, already in it and updated, skipped (the merchant deleted them), failed
+    productOutcomes: outcomes,
+    // The earlier files the updated ones came from, newest first. Only once the import is done
+    earlierFiles: fromFiles,
     // Products the AI step has written so far: ready (passed every check) or needs_review
     productsByStatus: Object.fromEntries(productCounts.map((p) => [p.status, p.count])),
     photos: photoSummary,
@@ -108,6 +120,83 @@ export function phaseOf(
   if (photosWaiting > 0) return "processing photos";
   if (Object.values(translations).some((t) => t.pending > 0)) return "translating";
   return "finishing";
+}
+
+// Each product of these imports (its rows with the same product key) and the catalog product its rows were saved
+// to, found the way the build step finds it: by product key, or else by one of its SKUs (a later, differently laid
+// out file may have given the product its own key since, see findExisting in pipeline/build.ts)
+function savedProducts(importIds: string[]) {
+  return sql`
+    select g.import_id, g.product_key, g.deleted, g.failed,
+      case when g.written and not g.deleted then coalesce(
+        (select p.id from ${products} p where p.product_key = g.product_key),
+        (select v.product_id from ${importRows} r join ${variants} v on v.sku = r.cleaned->>'sku'
+          where r.import_id = g.import_id and r.product_key = g.product_key limit 1)
+      ) end as product_id
+    from (
+      select import_id, product_key,
+        bool_or(status in ('done', 'needs_review')) as written,
+        bool_or(reason is not distinct from ${DELETED_SKIP}) as deleted,
+        bool_and(status = 'failed') as failed
+      from ${importRows}
+      where import_id = any(${sql.param(importIds)}::uuid[]) and product_key is not null
+      group by import_id, product_key
+    ) g
+  `;
+}
+
+// How many of each import's products were new, already in the catalog (and updated), skipped or failed. Uploading
+// the same products again, from the same file or a differently laid out one, updates them instead of adding copies,
+// and the merchant should see that it did. A product was already there when it was created before the import
+// started: the start, not the upload, because an import can wait for its photos while another upload adds the same
+// product. Worked out from the rows, so it stays right after a later upload updates the same products again.
+// Shared with the import list (list.ts)
+export async function productOutcomes(db: Db, importIds: string[]): Promise<Map<string, ProductOutcomes>> {
+  const counts = new Map(importIds.map((id) => [id, { new: 0, updated: 0, deleted: 0, failed: 0 }]));
+  if (!importIds.length) return counts;
+  const { rows } = await db.execute<{ import_id: string; created: number; updated: number; deleted: number; failed: number }>(sql`
+    select s.import_id,
+      count(*) filter (where p.created_at >= coalesce(i.started_at, i.created_at))::int as created,
+      count(*) filter (where p.created_at < coalesce(i.started_at, i.created_at))::int as updated,
+      count(*) filter (where s.deleted)::int as deleted,
+      count(*) filter (where s.failed)::int as failed
+    from (${savedProducts(importIds)}) s
+    join ${imports} i on i.id = s.import_id
+    left join ${products} p on p.id = s.product_id
+    group by s.import_id
+  `);
+  for (const r of rows) counts.set(r.import_id, { new: r.created, updated: r.updated, deleted: r.deleted, failed: r.failed });
+  return counts;
+}
+
+// The earlier files the products this import updated came from, newest first: their rows had the same product key
+// or one of the same SKUs. This reads every earlier row, so it's only worked out once the import is done, not on
+// every live update while it runs
+async function earlierFiles(db: Db, importId: string): Promise<string[]> {
+  const { rows } = await db.execute<{ file: string }>(sql`
+    with me as (
+      select coalesce(started_at, created_at) as started from ${imports} where id = ${importId}
+    ), updated as (
+      select s.product_key, p.id, p.product_key as current_key
+      from (${savedProducts([importId])}) s
+      join ${products} p on p.id = s.product_id
+      cross join me
+      where p.created_at < me.started
+    )
+    select i.sheet_file_name as file
+    from ${importRows} r
+    join ${imports} i on i.id = r.import_id
+    cross join me
+    where i.id <> ${importId} and coalesce(i.started_at, i.created_at) < me.started
+      and r.status in ('done', 'needs_review') and r.reason is distinct from ${DELETED_SKIP}
+      and (
+        r.product_key in (select product_key from updated union select current_key from updated)
+        or r.cleaned->>'sku' in (select v.sku from ${variants} v where v.product_id in (select id from updated))
+      )
+    group by i.sheet_file_name
+    order by max(coalesce(i.started_at, i.created_at)) desc
+  `);
+  return rows.map((r) => r.file);
 }
 
 export async function listImportRows(

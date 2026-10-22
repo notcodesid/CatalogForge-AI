@@ -1,7 +1,7 @@
 import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@/server/db/client";
 import { aiStatus, importRows, imports, photos, photoStatus, products, rowStatus, translationState } from "@/server/db/schema";
-import { phaseOf } from "./queries";
+import { phaseOf, productOutcomes } from "./queries";
 
 type RowStatus = (typeof rowStatus.enumValues)[number];
 type PhotoStatus = (typeof photoStatus.enumValues)[number];
@@ -32,7 +32,7 @@ export async function listImports(db: Db, options: { limit: number; offset: numb
   const ids = page.map((imp) => imp.id);
   if (!ids.length) return { total, imports: [] };
 
-  const [rowCounts, productCounts, photoCounts, translationCounts] = await Promise.all([
+  const [rowCounts, productCounts, outcomes, photoCounts, translationCounts] = await Promise.all([
     db
       .select({ importId: importRows.importId, status: importRows.status, n: count() })
       .from(importRows)
@@ -43,6 +43,8 @@ export async function listImports(db: Db, options: { limit: number; offset: numb
       .from(importRows)
       .where(inArray(importRows.importId, ids))
       .groupBy(importRows.importId),
+    // New products, and ones already in the catalog that the file updated
+    productOutcomes(db, ids),
     db
       .select({
         importId: photos.importId,
@@ -102,6 +104,7 @@ export async function listImports(db: Db, options: { limit: number; offset: numb
         totalRows: imp.totalRows,
         rows,
         products: productCounts.find((p) => p.importId === imp.id)?.n ?? 0,
+        productOutcomes: outcomes.get(imp.id)!,
         photos: photoSummary,
         translations,
         createdAt: imp.createdAt,
