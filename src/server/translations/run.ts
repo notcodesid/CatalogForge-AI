@@ -7,6 +7,7 @@ import { finishImportIfComplete } from "@/server/pipeline/build";
 import type { TranslateBatchJob } from "@/server/queue/queues";
 import { checkField, cleanTranslated } from "./checks";
 import {
+  decodeValue,
   encodeValue,
   englishFields,
   fieldHashes,
@@ -23,8 +24,9 @@ import { TRANSLATE_PROMPT_VERSION, translateResponseJsonSchema, translateRespons
 import { markDone, markFailed } from "./state";
 
 // One product's work: the English, its fingerprints, and the fields to translate (new or changed English,
-// and not written by the merchant)
-type Work = { productId: string; english: EnglishFields; hashes: Record<string, string>; todo: TranslatedField[] };
+// and not written by the merchant). savedOptions: the option values' translation already saved, when they aren't
+// translated again, so tags that are also option values can follow it (see cleanTranslated)
+type Work = { productId: string; english: EnglishFields; hashes: Record<string, string>; todo: TranslatedField[]; savedOptions?: TranslatedFields["options"] };
 type Outcome = { translated: TranslatedFields; model: string } | { error: string };
 
 export async function runTranslateBatch(db: Db, provider: AiProvider, job: TranslateBatchJob, options: { signal?: AbortSignal } = {}) {
@@ -70,7 +72,16 @@ async function planWork(db: Db, job: TranslateBatchJob): Promise<Work[]> {
       const row = mine.find((t) => t.field === field);
       return !row || (row.writtenBy === "ai" && row.sourceHash !== hashes[field]);
     });
-    if (todo.length) work.push({ productId: product.id, english, hashes, todo });
+    const savedOptions = mine.find((t) => t.field === "options");
+    if (todo.length) {
+      work.push({
+        productId: product.id,
+        english,
+        hashes,
+        todo,
+        savedOptions: savedOptions && !todo.includes("options") ? decodeValue("options", savedOptions.value) : undefined,
+      });
+    }
     else await markDone(db, product.id, job.locale, hashes);
   }
   return work;
@@ -102,10 +113,11 @@ async function translateAndSave(db: Db, provider: AiProvider, job: TranslateBatc
       await markFailed(db, [item.productId], job.locale, outcome.error);
       continue;
     }
+    const withOptions = { ...outcome.translated, options: outcome.translated.options ?? item.savedOptions };
     for (const field of item.todo) {
       const problems = checkField(field, item.english, outcome.translated);
       const values = {
-        value: encodeValue(cleanTranslated(field, item.english, outcome.translated)),
+        value: encodeValue(cleanTranslated(field, item.english, withOptions)),
         sourceHash: item.hashes[field],
         writtenBy: "ai" as const,
         // A translation that failed a check is kept for the merchant to see, but shoppers get the English

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { type EnglishFields, LANGUAGE_NAMES, type Locale, type TranslatedFields } from "./fields";
 
 // Change this whenever the instructions or the answer's shape change, so answers saved for the old ones aren't reused
-export const TRANSLATE_PROMPT_VERSION = "translate-v1";
+export const TRANSLATE_PROMPT_VERSION = "translate-v2";
 
 const AUDIENCE: Record<Locale, string> = { de: "shoppers in Germany and Austria", fr: "shoppers in France" };
 const POLITE: Record<Locale, string> = { de: '"Sie"', fr: '"vous"' };
@@ -24,7 +24,9 @@ Rules:
   and don't write numbers as words.
 - title: the product's name in ${language}. Max 80 characters.
 - description_html: keep every HTML tag exactly as it is, in the same order. Translate only the text between the tags.
-- tags: short lowercase ${language} tags, one for each English tag.
+- tags: short lowercase ${language} tags, one for each English tag, in the same order. Words are separated by spaces,
+  as in the English. A tag that is also an option value (a colour like "natural") means that value: translate it the
+  same way.
 - attributes: { "<attribute key>": { "label": "<the attribute's name in ${language}>", "value": "<the value in ${language}>" } },
   with exactly the keys you were given.
 - options: { "<option name>": { "label": "<the option's name in ${language}>", "values": { "<English value>": "<the value in ${language}>" } } },
