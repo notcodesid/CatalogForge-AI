@@ -134,6 +134,26 @@ export type Claim = {
   quote: string;
 };
 
+// A new listing the AI wrote for a product that's already approved (a newer sheet, or newer instructions). It waits
+// here for the merchant: the approved listing stays in the shop until they use this one or keep theirs
+export type PendingListing = {
+  title: string;
+  descriptionHtml: string;
+  category: string | null;
+  tags: string[];
+  attributes: Record<string, string>;
+  claims: Claim[];
+  confidence: Record<string, number>;
+  optionNames: OptionNames;
+  // What the AI checks found in this version (like contentReviewReasons), shown next to it
+  reviewReasons: string[];
+  model: string;
+  promptVersion: string;
+  // The upload that made it, and when
+  importId: string;
+  createdAt: string;
+};
+
 export const products = pgTable(
   "products",
   {
@@ -158,8 +178,9 @@ export const products = pgTable(
     lastImportId: uuid().references(() => imports.id, { onDelete: "set null" }),
     // Hash of the cleaned source rows. Same hash on re-upload = no AI call
     sourceHash: text(),
-    // The supplier text the listing was written from, as the AI saw it. A later file with nothing new to say
-    // about the product (e.g. a price list) is compared with this, and only updates prices and variants
+    // The supplier text the AI last wrote from, as it saw it: the listing's, or a newer version's that's waiting or
+    // that the merchant turned down (see pendingListing). A later file with nothing new to say about the product
+    // (e.g. a price list) is compared with this, and only updates prices and variants
     sourceInput: jsonb().$type<ProductInput>(),
     // Problems with the listing itself, found by the AI checks. The rows' own problems (no price...) are added
     // on top. Kept when a later file only updates prices and variants
@@ -170,7 +191,11 @@ export const products = pgTable(
     // A translation made from different English is out of date (see translations/fields.ts)
     englishHashes: jsonb().$type<Record<string, string>>().notNull().default({}),
     model: text(),
+    // The AI instructions the product was last written with (its listing, or the waiting new version). Older than
+    // the current ones = the AI writes it again on the next upload
     promptVersion: text(),
+    // The AI's new listing for an approved product, waiting for the merchant (null: nothing waiting)
+    pendingListing: jsonb().$type<PendingListing>(),
     approvedAt: timestamp({ withTimezone: true }),
     // Soft delete, so a re-upload doesn't silently bring it back
     deletedAt: timestamp({ withTimezone: true }),
@@ -196,12 +221,17 @@ export const variants = pgTable(
     position: integer().notNull().default(0),
     // The merchant typed this price in Edit. A re-upload of the sheet never changes it (theirs wins, like text they edit)
     priceSetByHand: boolean().notNull().default(false),
+    // The price the supplier's sheet last gave this SKU (null: none, or two different ones). The same as the price,
+    // unless the merchant set theirs by hand: then a sheet with a new price is pointed out to them once
+    sheetPriceCents: integer(),
+    sheetCurrency: char({ length: 3 }),
     ...timestamps,
   },
   (t) => [
     index().on(t.productId),
     check("variants_price_not_negative", sql`${t.priceCents} >= 0`),
     check("variants_price_has_currency", sql`(${t.priceCents} is null) = (${t.currency} is null)`),
+    check("variants_sheet_price_has_currency", sql`(${t.sheetPriceCents} is null) = (${t.sheetCurrency} is null)`),
     check("variants_weight_not_negative", sql`${t.weightGrams} >= 0`),
   ],
 );
