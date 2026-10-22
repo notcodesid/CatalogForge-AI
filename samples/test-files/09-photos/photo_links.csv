@@ -1,0 +1,10 @@
+SKU,Name,Price,Currency,Image
+PIC-1,Ceramic Vase,20.00,EUR,https://picsum.photos/id/1060/1200/900.jpg
+PIC-2,Linen Throw,35.00,EUR,https://picsum.photos/id/1080/2400/1600
+PIC-3,Oak Side Table,89.00,EUR,"https://picsum.photos/id/1025/800/600.jpg, https://picsum.photos/id/1062/800/600.jpg"
+PIC-4,Brass Lamp,49.00,EUR,https://cdn.shopify.com/s/files/1/0000/0001/products/does-not-exist.jpg
+PIC-5,Garden Gnome,15.00,EUR,https://shop.example.com/gnome.jpg
+PIC-6,Coir Doormat,19.00,EUR,https://example.com/
+PIC-7,Storm Lantern,29.00,EUR,http://169.254.169.254/latest/meta-data/iam/security-credentials/
+PIC-8,Soy Candle,12.00,EUR,http://localhost:3123/api/health
+PIC-9,Stoneware Bowl,14.00,EUR,https://httpbin.org/redirect-to?url=http://127.0.0.1:5433/
