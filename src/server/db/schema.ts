@@ -15,6 +15,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { OptionNames } from "../ai/option-names";
 import type { ProductInput } from "../ai/prompt";
 import type { CleanedRow, ParseInfo } from "../pipeline/types";
 
@@ -149,6 +150,9 @@ export const products = pgTable(
     claims: jsonb().$type<Claim[]>().notNull().default([]),
     // Field name -> 0..100
     confidence: jsonb().$type<Record<string, number>>().notNull().default({}),
+    // What the supplier's colour or size column really holds, when the AI says it's something else: { color: "scent" }.
+    // Kept so a later price list (no AI call) still saves the variants under that name (see ai/option-names.ts)
+    optionNames: jsonb().$type<OptionNames>().notNull().default({}),
     reviewReason: text(),
     sourceRows: integer().array().notNull().default(sql`'{}'::int[]`),
     lastImportId: uuid().references(() => imports.id, { onDelete: "set null" }),
@@ -190,6 +194,8 @@ export const variants = pgTable(
     currency: char({ length: 3 }),
     weightGrams: integer(),
     position: integer().notNull().default(0),
+    // The merchant typed this price in Edit. A re-upload of the sheet never changes it (theirs wins, like text they edit)
+    priceSetByHand: boolean().notNull().default(false),
     ...timestamps,
   },
   (t) => [
