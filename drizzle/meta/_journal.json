@@ -15,6 +15,62 @@
       "when": 1792603594353,
       "tag": "0001_foundation_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792617331790,
+      "tag": "0002_build_planned",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792648908548,
+      "tag": "0003_ai_rate_limit",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792654973279,
+      "tag": "0004_keep_listing",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792663913614,
+      "tag": "0005_photos",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792665159761,
+      "tag": "0006_photo_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792667313196,
+      "tag": "0007_translations",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792667313721,
+      "tag": "0008_translation_issue",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792667645714,
+      "tag": "0009_products_by_import",
+      "breakpoints": true
     }
   ]
 }

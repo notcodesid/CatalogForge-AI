@@ -1,0 +1,1 @@
+CREATE INDEX "products_last_import_id_index" ON "products" USING btree ("last_import_id");
