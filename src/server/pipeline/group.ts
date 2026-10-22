@@ -62,8 +62,14 @@ const COMPARED: { field: keyof CleanedRow; label: string }[] = [
   { field: "notes", label: "notes" },
 ];
 
+// "€32.00", the way the merchant reads a price
+function money(cents: number, currency: string | null) {
+  if (!currency) return (cents / 100).toFixed(2);
+  return new Intl.NumberFormat("en", { style: "currency", currency }).format(cents / 100);
+}
+
 function describe(row: CleanedRow, field: keyof CleanedRow): string {
-  if (field === "priceCents") return row.priceCents === null ? "no price" : formatPrice(row.priceCents, row.currency ?? "");
+  if (field === "priceCents") return row.priceCents === null ? "no price" : money(row.priceCents, row.currency);
   if (field === "weightGrams") return row.weightGrams === null ? "no weight" : `${row.weightGrams} g`;
   if (field === "options") return Object.entries(row.options).map(([k, v]) => `${k}: ${v}`).join(", ") || "none";
   const value = row[field];
@@ -81,8 +87,17 @@ function optionSignature(row: CleanedRow) {
   const other = Object.entries(row.options)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => `${k.toLowerCase()}=${v.toLowerCase()}`);
-  return [row.size ?? "", row.color ?? "", ...other].join("|");
+  return [sizeKey(row), row.color ?? "", ...other].join("|");
 }
+
+// Lengths compare by their millimetres: sizes keep the supplier's unit, and "100 cm" and "1 m" are the same size
+function sizeKey(row: CleanedRow) {
+  return row.sizeMm ? `${row.sizeMm.join("×")} mm` : (row.size ?? "");
+}
+
+// Two rows say the same about a field. Like describe, but a length compares by its millimetres
+const sameValue = (a: CleanedRow, b: CleanedRow, field: keyof CleanedRow) =>
+  field === "size" ? sizeKey(a) === sizeKey(b) : describe(a, field) === describe(b, field);
 
 // Puts rows that belong to the same product together and finds duplicates and conflicts.
 // Works on the whole sheet at once, so row order doesn't matter
@@ -114,17 +129,20 @@ export function groupRows(rows: GroupInput[], options: GroupOptions): GroupResul
       }
     }
 
-    // Same SKU on several rows: exact copies are merged, different data needs a person
+    // Same SKU on several rows: exact copies are merged, different data needs a person. Different prices are never
+    // settled for the merchant: the variant is saved without a price (see saveVariants) until they enter the right one.
+    // A row without a SKU is saved under one made from its size, colour and options (generatedSku in build.ts), so
+    // rows without a SKU that have the same ones are the same variant too
     const bySku = new Map<string, GroupInput[]>();
     for (const r of variants) {
-      if (!r.cleaned.sku) continue;
-      const key = skuKey(r.cleaned.sku);
+      const { sku, size, color, options } = r.cleaned;
+      const key = sku ? skuKey(sku) : `no sku:${JSON.stringify([size, color, options])}`;
       bySku.set(key, [...(bySku.get(key) ?? []), r]);
     }
     for (const skuRows of bySku.values()) {
       if (skuRows.length < 2) continue;
       const first = skuRows[0];
-      const differences = COMPARED.filter(({ field }) => skuRows.some((r) => describe(r.cleaned, field) !== describe(first.cleaned, field)));
+      const differences = COMPARED.filter(({ field }) => skuRows.some((r) => !sameValue(r.cleaned, first.cleaned, field)));
 
       if (differences.length === 0) {
         for (const r of skuRows.slice(1)) {
@@ -134,15 +152,19 @@ export function groupRows(rows: GroupInput[], options: GroupOptions): GroupResul
         continue;
       }
 
-      const detail = differences
-        .map(({ field, label }) => `${label} (${skuRows.map((r) => describe(r.cleaned, field)).join(" vs ")})`)
-        .join(", ");
+      const rowList = listRows(skuRows.map((x) => x.rowNumber));
+      const same = first.cleaned.sku ? `Rows ${rowList} have the same SKU ${first.cleaned.sku}` : `Rows ${rowList} have no SKU and the same size, colour and options`;
+      const values = (field: keyof CleanedRow) => skuRows.map((r) => describe(r.cleaned, field)).join(" vs ");
+      const prices = differences.some(({ field }) => field === "priceCents");
+      // The price already shows its currency
+      const others = differences.filter(({ field }) => field !== "priceCents" && !(prices && field === "currency"));
       for (const r of skuRows) {
-        addIssue(r.rowNumber, {
-          field: "sku",
-          severity: "review",
-          message: `Rows ${listRows(skuRows.map((x) => x.rowNumber))} have the same SKU ${first.cleaned.sku} but different ${detail}`,
-        });
+        if (prices) {
+          addIssue(r.rowNumber, { field: "price", severity: "review", message: `${same} but different prices (${values("priceCents")}). Enter the right one with Edit` });
+        }
+        if (others.length) {
+          addIssue(r.rowNumber, { field: "sku", severity: "review", message: `${same} but different ${others.map(({ field, label }) => `${label} (${values(field)})`).join(", ")}` });
+        }
       }
     }
 

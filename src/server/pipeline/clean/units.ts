@@ -11,6 +11,8 @@ const MM_PER: Record<string, number> = {
   mm: 1, cm: 10, m: 1000,
   in: 25.4, inch: 25.4, inches: 25.4, '"': 25.4, "''": 25.4, "”": 25.4, "″": 25.4,
 };
+// Metric lengths keep the supplier's unit, only inches become cm
+const METRIC = new Set(["mm", "cm", "m"]);
 
 // More than this is almost certainly a typo or the wrong unit
 const MAX_GRAMS = 2_000_000;
@@ -40,7 +42,7 @@ export function parseWeight(raw: string | null | undefined, unitHint?: string): 
 }
 
 export type SizeResult = {
-  // What the merchant and shopper see, e.g. "20.3 cm"
+  // What the merchant and shopper see, e.g. "20.3 cm", "100 m"
   text: string;
   // Lengths in millimetres, null for volumes and labels like "XL"
   mm: number[] | null;
@@ -56,8 +58,9 @@ function formatCm(mm: number) {
 const LENGTH_UNIT = /(mm|cm|m|inches|inch|in|"|''|”|″)/;
 const PART = new RegExp(`^(\\d+(?:[.,]\\d+)?)\\s*${LENGTH_UNIT.source}?$`);
 
-// Lengths become cm: "8 in" -> "20.3 cm", "12\"" -> "30.5 cm", "150 x 45 x 85 cm" -> "150 × 45 × 85 cm".
-// Volumes and labels stay as they are: "350 ml", "XL"
+// Inches become cm: "8 in" -> "20.3 cm", "12\"" -> "30.5 cm". Metric lengths keep their unit, tidied: "100 m",
+// "1,5 m" -> "1.5 m", "150 x 45 x 85 cm" -> "150 × 45 × 85 cm". Volumes and labels stay as they are: "350 ml", "XL".
+// The mm list has every length in millimetres, so "100 cm" and "1 m" can still be compared
 export function parseSize(raw: string | null | undefined, unitHint?: string): SizeResult | null {
   let text = cleanText(raw);
   if (!text) return null;
@@ -84,8 +87,15 @@ export function parseSize(raw: string | null | undefined, unitHint?: string): Si
     // A unit at the end applies to every part: "150 x 45 x 85 cm"
     const lastUnit = parsed.at(-1)![2] ?? unitHint;
     if (!lastUnit) return { text: prefix + text, mm: null, problem: `Size "${text}" has no unit (cm or inches?)` };
-    const mm = parsed.map((m) => Math.round(toNumber(m![1]) * MM_PER[m![2] ?? lastUnit]));
-    return { text: `${prefix}${mm.map(formatCm).join(" × ")} cm`, mm };
+    const lengths = parsed.map((m) => {
+      const unit = m![2] ?? lastUnit;
+      const mm = Math.round(toNumber(m![1]) * MM_PER[unit]);
+      return METRIC.has(unit) ? { value: String(toNumber(m![1])), unit, mm } : { value: formatCm(mm), unit: "cm", mm };
+    });
+    // One unit is written once at the end ("150 × 45 × 85 cm"), mixed units next to each part ("50 cm × 1 m")
+    const sameUnit = lengths.every((l) => l.unit === lengths[0].unit);
+    const shown = sameUnit ? `${lengths.map((l) => l.value).join(" × ")} ${lengths[0].unit}` : lengths.map((l) => `${l.value} ${l.unit}`).join(" × ");
+    return { text: prefix + shown, mm: lengths.map((l) => l.mm) };
   }
 
   // A label like "XL" or "One size"

@@ -57,18 +57,53 @@ describe("groupRows", () => {
     expect(second.issues).toEqual([{ field: "sku", severity: "info", message: "Same as row 2, merged" }]);
   });
 
-  it("sends the same SKU with different data to review, showing both values", () => {
+  it("sends the same SKU with different prices to review, showing both and saying how to fix it", () => {
     const result = groupRows(
       [row(4, { sku: "MG-01", title: "Stoneware Mug", priceCents: 1250 }), row(5, { sku: "MG-01", title: "Stoneware Mug", priceCents: 1400 })],
       noParentColumn,
     );
     for (const r of result) {
-      expect(r.issues).toContainEqual({
-        field: "sku",
-        severity: "review",
-        message: "Rows 4 and 5 have the same SKU MG-01 but different price (12.50 EUR vs 14.00 EUR)",
-      });
+      expect(r.duplicateOfRow).toBeUndefined();
+      expect(r.issues).toEqual([
+        {
+          field: "price",
+          severity: "review",
+          message: "Rows 4 and 5 have the same SKU MG-01 but different prices (€12.50 vs €14.00). Enter the right one with Edit",
+        },
+      ]);
     }
+  });
+
+  it("keeps the price apart from the other differences, and doesn't repeat the currency the prices already show", () => {
+    const [first] = groupRows(
+      [
+        row(10, { sku: "CW-15", title: "Watering Can", priceCents: 3200, weightGrams: 500 }),
+        row(11, { sku: "CW-15", title: "Watering Can", priceCents: 3200, currency: "GBP", weightGrams: 600 }),
+      ],
+      noParentColumn,
+    );
+    expect(first.issues.filter((i) => i.message.includes("same SKU")).map((i) => [i.field, i.message])).toEqual([
+      ["price", "Rows 10 and 11 have the same SKU CW-15 but different prices (€32.00 vs £32.00). Enter the right one with Edit"],
+      ["sku", "Rows 10 and 11 have the same SKU CW-15 but different weight (500 g vs 600 g)"],
+    ]);
+
+    const [samePrice] = groupRows([row(10, { sku: "CW-15", color: "red" }), row(11, { sku: "CW-15", color: "blue" })], noParentColumn);
+    expect(samePrice.issues.map((i) => i.message)).toEqual(["Rows 10 and 11 have the same SKU CW-15 but different colour (red vs blue)"]);
+  });
+
+  it("treats rows without a SKU but with the same options as one variant: copies merged, different prices flagged", () => {
+    const copies = groupRows([row(2, { title: "Garden Bench" }), row(3, { title: "Garden Bench" }), row(4, { title: "Garden Bench", size: "L" })], noParentColumn);
+    expect(copies.map((r) => r.duplicateOfRow)).toEqual([undefined, 2, undefined]);
+    expect(copies[2].issues).toEqual([]);
+
+    const [first] = groupRows([row(2, { title: "Garden Bench", priceCents: 12000 }), row(3, { title: "Garden Bench", priceCents: 13000 })], noParentColumn);
+    expect(first.issues).toEqual([
+      {
+        field: "price",
+        severity: "review",
+        message: "Rows 2 and 3 have no SKU and the same size, colour and options but different prices (€120.00 vs €130.00). Enter the right one with Edit",
+      },
+    ]);
   });
 
   it("asks for a check when rows were only grouped because their names look alike", () => {
@@ -92,6 +127,17 @@ describe("groupRows", () => {
       withParentColumn,
     );
     expect(result[1].issues[0].message).toBe("SKUs A-1 and A-2 are in the same product but have the same size, colour and options");
+  });
+
+  it("compares lengths by their millimetres, since sizes keep the supplier's unit", () => {
+    // "100 cm" and "1 m" are the same size: two SKUs with them are flagged, the same SKU with them is an exact copy
+    const sameSize = groupRows(
+      [row(1, { sku: "R-1", parentSku: "R", size: "100 cm", sizeMm: [1000] }), row(2, { sku: "R-2", parentSku: "R", size: "1 m", sizeMm: [1000] })],
+      withParentColumn,
+    );
+    expect(sameSize[1].issues[0].message).toBe("SKUs R-1 and R-2 are in the same product but have the same size, colour and options");
+    const copies = groupRows([row(1, { sku: "R-1", size: "100 cm", sizeMm: [1000] }), row(2, { sku: "R-1", size: "1 m", sizeMm: [1000] })], noParentColumn);
+    expect(copies[1].duplicateOfRow).toBe(1);
   });
 
   it("doesn't flag variants that differ only in another option, like material", () => {
