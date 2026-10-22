@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { MAX_SHEET_BYTES } from "@/server/imports/create-import";
 import { MAX_PHOTO_BYTES, MAX_PHOTO_REQUEST_BYTES, MAX_PHOTOS_PER_IMPORT } from "@/server/photos/upload";
+import type { ImportSummary } from "./api";
 import { formatBytes, formatDuration, resumingIn, timeAgo } from "./format";
+import { nextStep, nowDoing, photosLine, productsLine, rowsLine } from "./import-progress";
 import { LIMITS, PHOTO_BATCH } from "./limits";
 import { EMPTY, photoBatches, sortFiles } from "./upload-files";
 
@@ -61,5 +63,75 @@ describe("format", () => {
     expect(formatDuration(3_840_000)).toBe("1 h 4 min");
     expect(resumingIn("2026-10-22T12:02:30Z", now)).toBe("resuming in 3 minutes");
     expect(resumingIn("2026-10-22T11:59:00Z", now)).toBe("resuming now");
+  });
+});
+
+describe("import progress on the Upload tab", () => {
+  const summary = (over: Partial<ImportSummary> = {}): ImportSummary => ({
+    id: "imp-1",
+    fileName: "round1_sheet.csv",
+    status: "running",
+    stage: "build",
+    phase: "writing products",
+    pausedUntil: null,
+    pauseReason: null,
+    error: null,
+    totalRows: 13,
+    rows: { pending: 6, processing: 2, done: 4, needs_review: 1, failed: 0 },
+    products: 4,
+    productOutcomes: { new: 0, updated: 0, deleted: 0, failed: 0 },
+    photos: { total: 14, pending: 14, matched: 0, unmatched: 0, rejected: 0, waitingToBeProcessed: 14, linksOverLimit: 0, missing: [] },
+    translations: { de: { done: 0, pending: 0, failed: 0 }, fr: { done: 0, pending: 0, failed: 0 } },
+    createdAt: "2026-10-22T12:00:00Z",
+    startedAt: "2026-10-22T12:00:01Z",
+    finishedAt: null,
+    defaultCurrency: "EUR",
+    rowsWithReviewIssues: 0,
+    earlierFiles: [],
+    productsByStatus: {},
+    parseInfo: null,
+    ...over,
+  });
+
+  it("says what it's doing while it runs", () => {
+    expect(nowDoing(summary())).toBe("Writing products: 5 of 13 rows done");
+    expect(nowDoing(summary({ phase: "translating", translations: { de: { done: 3, pending: 3, failed: 0 }, fr: { done: 2, pending: 4, failed: 0 } } }))).toBe(
+      "Translating: German 3 of 6, French 2 of 6",
+    );
+    expect(nowDoing(summary({ phase: "reading the sheet" }))).toBe("Reading the sheet…");
+  });
+
+  it("says the photos arrived, then what came of them", () => {
+    expect(photosLine(summary())).toBe("14 photos received, matching them to products…");
+    const matched = summary({ photos: { ...summary().photos, pending: 0, matched: 12, unmatched: 2 } });
+    expect(photosLine(matched)).toBe("14 photos: 12 matched · 2 unmatched");
+    expect(photosLine(summary({ photos: { ...summary().photos, total: 0, pending: 0 } }))).toBeNull();
+  });
+
+  it("sums up the rows and leads to the products waiting for review", () => {
+    const done = summary({ status: "done", rows: { pending: 0, processing: 0, done: 11, needs_review: 2, failed: 0 }, productsByStatus: { ready: 3, needs_review: 2 } });
+    expect(rowsLine(done)).toBe("13 rows: 11 done · 2 need review · 0 failed");
+    expect(nextStep(done)).toEqual({ href: "/products?import=imp-1&status=needs_review", label: "Review 2 products" });
+    expect(nextStep(summary({ status: "done", productsByStatus: { ready: 4 } }))).toEqual({ href: "/products?import=imp-1", label: "See the 4 products" });
+  });
+
+  it("says which products were new and which were already in the catalog, and from which file", () => {
+    const outcomes = (o: Partial<ImportSummary["productOutcomes"]>) => ({ new: 0, updated: 0, deleted: 0, failed: 0, ...o });
+    const level1 = summary({ fileName: "level1_basic.csv", products: 6, productOutcomes: outcomes({ new: 4, updated: 2 }) });
+    // In the list, and while it runs, the earlier files aren't known yet
+    expect(productsLine(level1)).toBe("6 products: 4 new, 2 already in your catalog (updated)");
+    expect(productsLine({ ...level1, earlierFiles: ["shopify_products_export.csv"] })).toBe(
+      "6 products: 4 new, 2 already in your catalog from shopify_products_export.csv (updated)",
+    );
+    expect(productsLine({ ...level1, earlierFiles: ["a.csv", "b.csv", "c.csv"] })).toBe("6 products: 4 new, 2 already in your catalog from a.csv and 2 other files (updated)");
+
+    // The same file again
+    const again = summary({ products: 12, productOutcomes: outcomes({ updated: 11, deleted: 1 }), earlierFiles: ["round1_sheet.csv", "old.csv"] });
+    expect(productsLine(again)).toBe("12 products: 11 already in your catalog from an earlier upload of this file and old.csv (updated), 1 skipped (you deleted it)");
+
+    expect(productsLine(summary({ products: 6, productOutcomes: outcomes({ new: 6 }) }))).toBe("6 new products");
+    expect(productsLine(summary({ products: 6, productOutcomes: outcomes({ new: 5, failed: 1 }) }))).toBe("6 products: 5 new, 1 failed");
+    // Still being written
+    expect(productsLine(summary({ products: 6, productOutcomes: outcomes({}) }))).toBe("6 products");
   });
 });

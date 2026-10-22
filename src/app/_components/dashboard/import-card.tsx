@@ -4,12 +4,16 @@ import Link from "next/link";
 import { useState } from "react";
 import { ApiError, postJson, type ImportListItem, type RetryResult } from "./api";
 import { asSentence, capitalize, formatCount, formatDuration, resumingIn, timeAgo } from "./format";
+import { productsLine } from "./import-progress";
 import { IMPORT_STATUS, LANGUAGE_NAMES, ROW_STATUS } from "./statuses";
 import { Badge, buttonClasses, Dot, linkClasses, ProgressBar } from "./ui";
 
 // The card fields both the list and the detail page have. On the detail page "missing" is the list of files,
-// in the list it's their number
-export type CardImport = Omit<ImportListItem, "photos"> & { photos: Omit<ImportListItem["photos"], "missing"> & { missing: number | unknown[] } };
+// in the list it's their number. Only the detail page knows which earlier files the updated products came from
+export type CardImport = Omit<ImportListItem, "photos"> & {
+  photos: Omit<ImportListItem["photos"], "missing"> & { missing: number | unknown[] };
+  earlierFiles?: string[];
+};
 
 function phaseLine(imp: CardImport) {
   if (imp.status === "done") return imp.startedAt && imp.finishedAt ? `Finished in ${formatDuration(Date.parse(imp.finishedAt) - Date.parse(imp.startedAt))}` : "Finished";
@@ -113,11 +117,7 @@ export function ImportCard({ imp, onChanged, headingLevel = 3, showDetailsLink =
 
       {(imp.products > 0 || photos.total > 0 || Object.keys(imp.translations).length > 0) && (
         <ul className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
-          {imp.products > 0 && (
-            <li>
-              <span className="font-medium text-foreground tabular-nums">{formatCount(imp.products)}</span> product{imp.products === 1 ? "" : "s"}
-            </li>
-          )}
+          {imp.products > 0 && <li className="text-foreground tabular-nums">{productsLine(imp)}</li>}
           {photos.total > 0 && (
             <li>
               Photos: <span className="tabular-nums">{formatCount(photos.matched)}</span> matched · {formatCount(photos.unmatched)} unmatched ·{" "}

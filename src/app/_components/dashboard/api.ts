@@ -11,6 +11,10 @@ export type TranslationCounts = Record<string, { done: number; pending: number; 
 
 type PhotoCounts = Record<PhotoStatus, number> & { total: number; waitingToBeProcessed: number; linksOverLimit: number };
 
+// What an import did to the catalog, per product: added it (new), updated one that was already there (the same
+// product key or SKU, from an earlier file), skipped it because the merchant deleted it, or failed
+export type ProductOutcomes = { new: number; updated: number; deleted: number; failed: number };
+
 export type ImportListItem = {
   id: string;
   fileName: string;
@@ -23,6 +27,7 @@ export type ImportListItem = {
   totalRows: number | null;
   rows: RowCounts;
   products: number;
+  productOutcomes: ProductOutcomes;
   // In the list, "missing" is how many files the sheet names that weren't uploaded
   photos: PhotoCounts & { missing: number };
   translations: TranslationCounts;
@@ -51,6 +56,8 @@ export type ImportSummary = Omit<ImportListItem, "photos"> & {
   photos: PhotoCounts & { missing: MissingPhoto[] };
   defaultCurrency: string;
   rowsWithReviewIssues: number;
+  // The earlier files the updated products came from, newest first. Empty until the import is done
+  earlierFiles: string[];
   productsByStatus: Record<string, number>;
   parseInfo: ParseInfo | null;
 };

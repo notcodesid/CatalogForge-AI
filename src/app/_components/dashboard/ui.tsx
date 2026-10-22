@@ -60,6 +60,16 @@ export function Meter({ value, max, label }: { value: number; max: number; label
   );
 }
 
+// A small turning circle for "busy". It stands still for people who asked for less motion
+export function Spinner({ className = "" }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" fill="none" className={`size-4 shrink-0 animate-spin motion-reduce:animate-none ${className}`}>
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function Skeleton({ className = "" }: { className?: string }) {
   return <div aria-hidden className={`animate-pulse rounded-lg bg-muted motion-reduce:animate-none ${className}`} />;
 }

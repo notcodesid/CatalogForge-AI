@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useRef, useState, type DragEvent } from "react";
+import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { ApiError, postForm, postJson } from "./api";
-import { formatBytes, formatCount } from "./format";
+import { asSentence, formatBytes, formatCount, resumingIn } from "./format";
+import { nextStep, nowDoing, photosLine, productsLine, rowsLine } from "./import-progress";
 import { CURRENCIES, LIMITS } from "./limits";
-import { buttonClasses, focusClasses, linkClasses, Meter } from "./ui";
+import { buttonClasses, focusClasses, linkClasses, Meter, Spinner } from "./ui";
 import { EMPTY, isZip, photoBatches, sortFiles, type Picked } from "./upload-files";
+import { useLiveSummary } from "./use-live-summary";
 
 type PhotoResult = { added: number; alreadyUploaded: number; refused: { fileName: string; reason: string }[] };
 type Progress = { step: "sheet" | "photos" | "starting"; sentBytes: number; totalBytes: number; sentFiles: number; totalFiles: number };
@@ -73,7 +75,8 @@ export function UploadPanel({ onChanged }: { onChanged: () => void }) {
 
   const add = (files: File[]) => {
     setProblem(null);
-    setOutcome(null);
+    // The import just started stays in view while the merchant picks the files for the next one
+    setOutcome((o) => (o?.kind === "started" ? o : null));
     setPicked((current) => sortFiles(files, current));
   };
 
@@ -290,8 +293,10 @@ export function UploadPanel({ onChanged }: { onChanged: () => void }) {
           </select>
         </div>
         <div className="flex gap-2">
-          <button type="button" className={buttonClasses("primary")} onClick={upload} disabled={busy || !picked.sheet} aria-busy={busy}>
-            {busy ? "Uploading…" : "Start import"}
+          {/* Not greyed out when no sheet is picked yet: a click says what's missing */}
+          <button type="button" className={buttonClasses("primary")} onClick={upload} disabled={busy} aria-busy={busy}>
+            {progress && <Spinner />}
+            {progress ? buttonLabel(progress) : "Start import"}
           </button>
           {busy && (
             <button type="button" className={buttonClasses("secondary")} onClick={() => abort.current?.abort()}>
@@ -308,6 +313,11 @@ export function UploadPanel({ onChanged }: { onChanged: () => void }) {
       </div>
     </section>
   );
+}
+
+function buttonLabel(progress: Progress) {
+  if (progress.step === "photos") return `Uploading ${formatCount(progress.sentFiles)} of ${formatCount(progress.totalFiles)} files…`;
+  return progress.step === "sheet" ? "Uploading the sheet…" : "Starting…";
 }
 
 function UploadProgress({ progress }: { progress: Progress }) {
@@ -331,33 +341,7 @@ function OutcomeMessage({ outcome }: { outcome: Outcome }) {
       Follow it
     </Link>
   );
-  if (outcome.kind === "started") {
-    const refused = outcome.photos?.refused ?? [];
-    return (
-      <div className="rounded-md border border-success/40 bg-success-soft px-3 py-2 text-sm">
-        <p>
-          <span className="font-medium text-success">Import started.</span> It runs in the background, so you can leave this page. {details(outcome.importId)}
-        </p>
-        {outcome.photos && (
-          <p className="mt-1">
-            {formatCount(outcome.photos.added)} photo{outcome.photos.added === 1 ? "" : "s"} added
-            {outcome.photos.alreadyUploaded > 0 && `, ${formatCount(outcome.photos.alreadyUploaded)} were already there`}
-            {refused.length > 0 && `, ${refused.length} refused:`}
-          </p>
-        )}
-        {refused.length > 0 && (
-          <ul className="mt-1 space-y-0.5">
-            {refused.slice(0, 8).map((r, i) => (
-              <li key={i} className="break-all">
-                {r.fileName}: {r.reason}
-              </li>
-            ))}
-            {refused.length > 8 && <li>and {refused.length - 8} more (see the import&apos;s photo report)</li>}
-          </ul>
-        )}
-      </div>
-    );
-  }
+  if (outcome.kind === "started") return <StartedImport importId={outcome.importId} photos={outcome.photos} />;
   if (outcome.kind === "already-running") {
     return (
       <p className="rounded-md border border-info/40 bg-info-soft px-3 py-2 text-sm">
@@ -378,6 +362,91 @@ function OutcomeMessage({ outcome }: { outcome: Outcome }) {
       <p className="font-medium text-danger">The upload didn&apos;t go through</p>
       <p className="mt-1">{outcome.message}</p>
       {outcome.importId && <p className="mt-1">The sheet is saved and waits for its photos: you can start it from the list below.</p>}
+    </div>
+  );
+}
+
+// The import just started, followed live right here: what it's doing now, then how it went and what to do next
+function StartedImport({ importId, photos }: { importId: string; photos?: PhotoResult }) {
+  const { state } = useLiveSummary(importId);
+  const summary = state.status === "ready" ? state.summary : null;
+  const photoText = summary && photosLine(summary);
+  const viewImport = (
+    <Link href={`/imports/${importId}`} className={buttonClasses("secondary", "sm")}>
+      View import
+    </Link>
+  );
+
+  let body: ReactNode;
+  let box = "border-info/40 bg-info-soft";
+  if (summary?.status === "done") {
+    const next = nextStep(summary);
+    box = "border-success/40 bg-success-soft";
+    body = (
+      <>
+        <p className="flex flex-wrap items-center gap-x-2">
+          <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="size-4 shrink-0 text-success">
+            <path d="m5 12 5 5L20 7" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span className="font-medium text-success">Import finished</span>
+          <span>· {rowsLine(summary)}</span>
+        </p>
+        {/* New products, and ones already in the catalog that this file updated */}
+        {summary.products > 0 && <p className="mt-1">{productsLine(summary)}</p>}
+        {photoText && <p className="mt-1">{photoText}</p>}
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Link href={next.href} className={buttonClasses("primary", "sm")}>
+            {next.label}
+          </Link>
+          {viewImport}
+        </div>
+      </>
+    );
+  } else if (summary?.status === "failed") {
+    box = "border-danger/40 bg-danger-soft";
+    body = (
+      <>
+        <p className="font-medium text-danger">The file couldn&apos;t be imported</p>
+        <p className="mt-1">{asSentence(summary.error ?? "Fix the file and upload it again")}</p>
+        <div className="mt-3">{viewImport}</div>
+      </>
+    );
+  } else {
+    body = (
+      <>
+        <p className="flex items-center gap-2 font-medium">
+          <Spinner className="text-info" />
+          <span className="break-all">Processing {summary?.fileName ?? "the sheet"}</span>
+        </p>
+        <p className="mt-1">
+          {!summary ? "Starting…" : summary.status === "paused" ? `Paused, ${resumingIn(summary.pausedUntil)}. Nothing is lost: it carries on by itself.` : nowDoing(summary)}
+        </p>
+        {photoText && <p className="mt-1">{photoText}</p>}
+        <p className="mt-1 text-muted-foreground">You can leave this page: it keeps going in the background.</p>
+        <div className="mt-3">{viewImport}</div>
+      </>
+    );
+  }
+
+  const refused = photos?.refused ?? [];
+  return (
+    <div className={`rounded-md border px-3 py-2.5 text-sm ${box}`}>
+      {body}
+      {refused.length > 0 && (
+        <div className="mt-3 border-t border-border pt-2">
+          <p className="font-medium">
+            {refused.length} photo{refused.length === 1 ? " was" : "s were"} refused:
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {refused.slice(0, 8).map((r, i) => (
+              <li key={i} className="break-all">
+                {r.fileName}: {r.reason}
+              </li>
+            ))}
+            {refused.length > 8 && <li>and {refused.length - 8} more (see the import&apos;s photo report)</li>}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
