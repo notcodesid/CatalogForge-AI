@@ -46,6 +46,9 @@ next-env.d.ts
 # local run logs
 /.logs
 
+# vitest json reporter output
+/.vitest
+
 # uploaded files (local storage)
 /storage
-/.storage-test
+/.storage-test*

@@ -10,8 +10,9 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    // Uploaded files written by tests go here and are deleted afterwards
-    env: { STORAGE_DIR: ".storage-test" },
+    // Uploaded files written by tests go here and are deleted afterwards. TEST_STORAGE_DIR gives tests run side by
+    // side (with their own TEST_DATABASE_URL) a folder of their own
+    env: { STORAGE_DIR: process.env.TEST_STORAGE_DIR ?? ".storage-test" },
     // Rebuilds the test database from the migrations before every run
     globalSetup: ["./src/test/global-setup.ts"],
     // Test files share one database, so run them one at a time
