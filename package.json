@@ -21,6 +21,7 @@
     "import:file": "tsx scripts/import-file.ts"
   },
   "dependencies": {
+    "@tanstack/react-table": "^9.3.1",
     "drizzle-orm": "^0.45.4",
     "next": "16.4.2",
     "papaparse": "^5.7.0",
@@ -29,7 +30,9 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "sanitize-html": "^2.18.1",
+    "sharp": "^0.35.5",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "yauzl": "^3.4.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -40,13 +43,16 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/sanitize-html": "^2.16.2",
+    "@types/yauzl": "^3.4.0",
+    "@types/yazl": "^3.3.1",
     "drizzle-kit": "^0.31.11",
     "eslint": "^9",
     "eslint-config-next": "16.4.2",
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "yazl": "^3.3.1"
   },
   "packageManager": "pnpm@9.15.0",
   "engines": {
