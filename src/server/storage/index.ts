@@ -23,6 +23,10 @@ export async function readStoredFile(key: string): Promise<Buffer> {
   return readFile(resolveKey(key));
 }
 
+export async function deleteStoredFile(key: string): Promise<void> {
+  await rm(resolveKey(key), { force: true });
+}
+
 // Deletes everything under a folder key, e.g. "imports/<id>"
 export async function deleteStoredFolder(key: string): Promise<void> {
   await rm(resolveKey(key), { recursive: true, force: true });

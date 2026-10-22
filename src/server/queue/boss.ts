@@ -40,7 +40,7 @@ async function createMissingQueues(boss: PgBoss) {
 
 // pg-boss saves a queue's settings only when the queue is first created. Without this, changing a retry
 // limit in queues.ts would never reach a database where the queue already exists
-export async function syncQueues(boss: PgBoss) {
+async function syncQueues(boss: PgBoss) {
   for (const queue of Object.values(queues)) {
     const existing = await boss.getQueue(queue.name);
     if (!existing) {
