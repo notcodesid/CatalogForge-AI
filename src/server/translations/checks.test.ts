@@ -76,4 +76,36 @@ describe("cleanTranslated", () => {
     expect(cleanTranslated("tags", english, { tags: ["Terrakotta", " terrakotta ", "Übertopf"] })).toEqual(["terrakotta", "übertopf"]);
     expect(cleanTranslated("attributes", english, { attributes: { ...goodGerman.attributes, extra: { label: "X", value: "Y" } } })).toEqual(goodGerman.attributes);
   });
+
+  it("translates a tag that is also a colour the way the colour was translated", () => {
+    // Seen in a real run: the colour "natural" was "Natur" in the options but "natürlich" ("of course") as a tag
+    const basket: EnglishFields = { tags: ["rattan basket", "natural"], options: { color: ["natural"], size: ["30 cm"] } };
+    const german = { tags: ["rattankorb", "natürlich"], options: { color: { label: "Farbe", values: { natural: "Natur" } }, size: { label: "Größe", values: { "30 cm": "30 cm" } } } };
+    expect(cleanTranslated("tags", basket, german)).toEqual(["rattankorb", "natur"]);
+    // Without the colour's translation in the same answer, the AI's tag stays
+    expect(cleanTranslated("tags", basket, { tags: german.tags })).toEqual(["rattankorb", "natürlich"]);
+  });
+
+  it("starts an option value with a capital only when the English does", () => {
+    // Seen in a real run: the colour "natural" was "Natur" on one product and "natur" on another
+    const basket: EnglishFields = { options: { color: ["natural", "sage"], material: ["Oak"], size: ["20 cm", "XL"], finish: ["uv-resistant"] } };
+    const options = (color: Record<string, string>, material: string, finish: string) => ({
+      color: { label: "Farbe", values: color },
+      material: { label: "Material", values: { Oak: material } },
+      size: { label: "Größe", values: { "20 cm": "20 cm", XL: "XL" } },
+      finish: { label: "Oberfläche", values: { "uv-resistant": finish } },
+    });
+    const one = cleanTranslated("options", basket, { options: options({ natural: "Natur", sage: "Salbei" }, "eiche", "UV-beständig") });
+    const other = cleanTranslated("options", basket, { options: options({ natural: "natur", sage: "salbei" }, "Eiche", "UV-beständig") });
+    // Lowercase like the English colours, a capital like "Oak". Sizes, "XL" and "UV" stay as written
+    const expected = options({ natural: "natur", sage: "salbei" }, "Eiche", "UV-beständig");
+    expect(one).toEqual(expected);
+    expect(other).toEqual(expected);
+    // French too: "Naturel" -> "naturel"
+    const french = cleanTranslated("options", { options: { color: ["natural"] } }, { options: { color: { label: "Couleur", values: { natural: "Naturel" } } } });
+    expect(french).toEqual({ color: { label: "Couleur", values: { natural: "naturel" } } });
+    // The merchant's own translation is kept as they typed it
+    const typed = cleanTranslated("options", basket, { options: options({ natural: "Natur", sage: "Salbei" }, "eiche", "UV-beständig") }, "merchant");
+    expect(typed?.color.values).toEqual({ natural: "Natur", sage: "Salbei" });
+  });
 });

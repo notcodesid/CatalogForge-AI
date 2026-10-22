@@ -129,6 +129,28 @@ describe("translations", () => {
     expect(german.fields.description_html.value).toBe(descriptionBefore.value);
   });
 
+  it("translates a tag that is also a colour like the colour already saved, when only the tags change", async () => {
+    await importSheet();
+    await runTranslations();
+    const planter = await productByTitle("Hand-thrown Terracotta Planter");
+    // As the real AI would have it: the colour "terracotta" is "Terrakotta" in German
+    const options = { color: { label: "Farbe", values: { terracotta: "Terrakotta" } }, size: { label: "Größe", values: { "20 cm": "20 cm", "30 cm": "30 cm" } } };
+    await db
+      .update(translations)
+      .set({ value: JSON.stringify(options) })
+      .where(and(eq(translations.productId, planter.id), eq(translations.locale, "de"), eq(translations.field, "options")));
+    asked.length = 0;
+
+    await db.update(products).set({ tags: ["terracotta", "planter"] }).where(eq(products.id, planter.id));
+    await noteEnglishChange(db, planter.id);
+    await enqueuePendingTranslations(db, boss, { productIds: [planter.id] });
+    await runTranslations();
+    expect(translateCalls().map(fieldsAsked)).toEqual([[["tags"]], [["tags"]]]);
+    const german = (await productTranslations(db, planter.id)).languages.find((l) => l.locale === "de")!;
+    // The mock AI writes "terracotta de": the saved colour wins, the other tag is the AI's
+    expect(JSON.parse(german.fields.tags.value)).toEqual(["terrakotta", "planter de"]);
+  });
+
   it("keeps the merchant's own translation, flags it out of date when the English changes, and lets them confirm or drop it", async () => {
     await importSheet();
     await runTranslations();

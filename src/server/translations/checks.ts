@@ -153,16 +153,48 @@ export function checkField(field: TranslatedField, english: EnglishFields, trans
   }
 }
 
+// How this answer translated an English option value, when the word is one ("natural" -> "Natur")
+function optionTranslation(word: string, english: EnglishFields, translated: TranslatedFields): string | undefined {
+  for (const [name, values] of Object.entries(english.options ?? {})) {
+    const value = values.find((v) => v.toLowerCase() === word.toLowerCase());
+    if (value) return translated.options?.[name]?.values?.[value];
+  }
+  return undefined;
+}
+
+// An option value starts with a capital only when its English does. Each AI answer picks its own, so the colour
+// "natural" was "Natur" on one product and "natur" on the next. Sizes ("20 cm"), codes ("XL") and words
+// written in capitals ("LED-Leuchte") stay as the AI wrote them
+function matchFirstLetter(english: string, translated: string): string {
+  if (!/^\p{L}/u.test(english) || english === english.toUpperCase()) return translated;
+  const firstWord = translated.match(/^\p{L}+/u)?.[0];
+  if (!firstWord || (firstWord.length > 1 && firstWord === firstWord.toUpperCase())) return translated;
+  const capital = english[0] !== english[0].toLowerCase();
+  return (capital ? translated[0].toUpperCase() : translated[0].toLowerCase()) + translated.slice(1);
+}
+
 // The translation as it's stored: HTML cleaned like supplier HTML (no scripts, no attributes), tags lowercase,
-// only the attributes and option values the English has
-export function cleanTranslated<F extends TranslatedField>(field: F, english: EnglishFields, translated: TranslatedFields): TranslatedFields[F] {
+// only the attributes and option values the English has. The AI's option values are capitalised like their English;
+// the merchant's are kept as they typed them
+export function cleanTranslated<F extends TranslatedField>(
+  field: F,
+  english: EnglishFields,
+  translated: TranslatedFields,
+  by: "ai" | "merchant" = "ai",
+): TranslatedFields[F] {
   switch (field) {
     case "title":
       return (cleanText(translated.title) ?? "") as TranslatedFields[F];
     case "description_html":
       return (cleanDescription(translated.description_html)?.html ?? "") as TranslatedFields[F];
-    case "tags":
-      return [...new Set((translated.tags ?? []).map((t) => cleanText(t)?.toLowerCase()).filter((t): t is string => Boolean(t)))] as TranslatedFields[F];
+    case "tags": {
+      // A tag that is also an option value ("natural", the colour) takes that value's translation. Translated on
+      // its own, a single word loses its meaning: the colour "natural" became "natürlich" ("of course")
+      const englishTags = english.tags ?? [];
+      const got = translated.tags ?? [];
+      const tags = got.map((tag, i) => (got.length === englishTags.length && optionTranslation(englishTags[i], english, translated)) || tag);
+      return [...new Set(tags.map((t) => cleanText(t)?.toLowerCase()).filter((t): t is string => Boolean(t)))] as TranslatedFields[F];
+    }
     case "attributes": {
       const keys = Object.keys(english.attributes ?? {});
       return Object.fromEntries(
@@ -173,7 +205,11 @@ export function cleanTranslated<F extends TranslatedField>(field: F, english: En
       return Object.fromEntries(
         Object.entries(english.options ?? {}).map(([name, values]) => {
           const got = translated.options?.[name];
-          return [name, { label: cleanText(got?.label) ?? name, values: Object.fromEntries(values.map((v) => [v, cleanText(got?.values?.[v]) ?? v])) }];
+          const value = (v: string) => {
+            const text = cleanText(got?.values?.[v]) ?? v;
+            return by === "ai" ? matchFirstLetter(v, text) : text;
+          };
+          return [name, { label: cleanText(got?.label) ?? name, values: Object.fromEntries(values.map((v) => [v, value(v)])) }];
         }),
       ) as TranslatedFields[F];
   }

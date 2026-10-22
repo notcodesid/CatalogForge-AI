@@ -51,7 +51,7 @@ export async function writeTranslation(db: Db, productId: string, localeParam: s
   await noteEnglishChange(db, productId);
   const { english } = await loadProduct(db, productId);
   if (english[field] === undefined) throw new TranslationEditError(`This product has no English ${field} to translate`, 409);
-  const cleaned = cleanTranslated(field, english, { [field]: parsed.data });
+  const cleaned = cleanTranslated(field, english, { [field]: parsed.data }, "merchant");
   const warnings = checkField(field, english, { [field]: cleaned });
   const values = { value: encodeValue(cleaned), sourceHash: fieldHashes(english)[field], writtenBy: "merchant" as const, issue: null, updatedAt: new Date() };
   await db
