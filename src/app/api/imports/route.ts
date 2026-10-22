@@ -1,14 +1,39 @@
+import { connection } from "next/server";
+import { z } from "zod";
 import { getDb } from "@/server/db/client";
 import { createImport, MAX_SHEET_BYTES, UploadError } from "@/server/imports/create-import";
+import { listImports } from "@/server/imports/list";
+import { MAX_PHOTO_REQUEST_BYTES, type UploadedFile } from "@/server/photos/upload";
 import { getApiBoss } from "@/server/queue/boss";
 
-// POST /api/imports (multipart form: "sheet" = the CSV/XLSX file, optional "defaultCurrency")
-// Saves the file, queues the work and answers straight away with the import id
+const listSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+// GET /api/imports?limit=20&offset=0 - the upload queue, newest first, with each import's live counts: phase,
+// rows by status, photos, translation progress per language, pause and error
+export async function GET(request: Request) {
+  await connection();
+  const query = listSchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
+  if (!query.success) return Response.json({ error: z.prettifyError(query.error) }, { status: 400 });
+  return Response.json(await listImports(getDb(), query.data));
+}
+
+// POST /api/imports (multipart form)
+//   sheet           the CSV/XLSX file
+//   photos          optional, any number: photos (JPEG, PNG, WebP) or ZIPs of photos
+//   waitForPhotos   optional "true": more photos follow (POST /api/imports/:id/photos), then POST /api/imports/:id/start
+//   defaultCurrency optional
+// Saves the files, queues the work and answers straight away with the import id
 export async function POST(request: Request) {
   // Refuse oversized uploads before reading the body
   const length = Number(request.headers.get("content-length") ?? 0);
-  if (length > MAX_SHEET_BYTES + 1024 * 1024) {
-    return Response.json({ error: `The file is too big. The limit is ${MAX_SHEET_BYTES / 1024 / 1024} MB` }, { status: 413 });
+  if (length > MAX_SHEET_BYTES + MAX_PHOTO_REQUEST_BYTES) {
+    return Response.json(
+      { error: `The upload is too big. Send at most ${MAX_PHOTO_REQUEST_BYTES / 1024 / 1024} MB of photos per request, and the rest with POST /api/imports/:id/photos` },
+      { status: 413 },
+    );
   }
 
   let form: FormData;
@@ -23,18 +48,25 @@ export async function POST(request: Request) {
     return Response.json({ error: 'No file found. Send it in a field called "sheet"' }, { status: 400 });
   }
   const currency = form.get("defaultCurrency");
+  const photos: UploadedFile[] = [];
+  for (const photo of form.getAll("photos")) {
+    if (photo instanceof File) photos.push({ name: photo.name, bytes: new Uint8Array(await photo.arrayBuffer()) });
+  }
 
   try {
     const result = await createImport(getDb(), await getApiBoss(), {
       fileName: file.name,
       bytes: new Uint8Array(await file.arrayBuffer()),
       defaultCurrency: typeof currency === "string" && currency ? currency : undefined,
+      photos,
+      waitForPhotos: form.get("waitForPhotos") === "true",
     });
     return Response.json(
       {
         id: result.import.id,
         status: result.import.status,
         alreadyRunning: result.alreadyRunning,
+        photos: result.photos,
         statusUrl: `/api/imports/${result.import.id}`,
       },
       { status: result.alreadyRunning ? 200 : 202 },
