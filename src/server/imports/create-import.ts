@@ -7,26 +7,25 @@ import { imports } from "@/server/db/schema";
 import { CURRENCY_CODES } from "@/server/pipeline/clean/price";
 import { detectSheetType } from "@/server/pipeline/detect-file-type";
 import { queues, type ParseImportJob } from "@/server/queue/queues";
+import { MAX_PHOTOS_PER_IMPORT, savePhotos, unpackPhotos, type UploadedFile } from "@/server/photos/upload";
+import { enqueuePhotoJobs } from "@/server/photos/process";
 import { deleteStoredFolder, saveFile } from "@/server/storage";
+import { UploadError } from "./upload-error";
 
 export const MAX_SHEET_BYTES = 25 * 1024 * 1024;
 
 const ACTIVE_STATUSES = ["queued", "running", "paused"] as const;
 
-// A problem with what the client sent. The message is shown to the merchant as is
-export class UploadError extends Error {
-  constructor(
-    message: string,
-    readonly status = 400,
-  ) {
-    super(message);
-  }
-}
+export { UploadError };
 
 export type NewImport = {
   fileName: string;
   bytes: Uint8Array;
   defaultCurrency?: string;
+  // Photos and ZIPs of photos sent with the sheet
+  photos?: UploadedFile[];
+  // More photos will follow (POST /api/imports/:id/photos): keep the import waiting until it's started
+  waitForPhotos?: boolean;
 };
 
 function safeFileName(name: string) {
@@ -68,11 +67,30 @@ export async function createImport(db: Db, boss: PgBoss, input: NewImport) {
   // This check is only the fast path. The real guarantee is the unique index below
   const sheetHash = createHash("sha256").update(input.bytes).digest("hex");
   const running = await findActiveImport(db, sheetHash);
+  const withPhotos = Boolean(input.photos?.length) || Boolean(input.waitForPhotos);
+  if (running && withPhotos) {
+    throw new UploadError("This sheet is already being imported. Wait until it's done, then upload it again with its photos", 409);
+  }
   if (running) return { import: running, alreadyRunning: true };
+
+  // Checked before anything is saved, so a refused upload leaves nothing behind
+  const unpacked = withPhotos ? await unpackPhotos(input.photos ?? []) : null;
+  if (unpacked && unpacked.accepted.length > MAX_PHOTOS_PER_IMPORT) {
+    throw new UploadError(`An import can have at most ${MAX_PHOTOS_PER_IMPORT.toLocaleString("en")} photos. This upload has ${unpacked.accepted.length.toLocaleString("en")}`, 413);
+  }
 
   const id = randomUUID();
   const sheetPath = `imports/${id}/${safeFileName(input.fileName)}`;
   await saveFile(sheetPath, input.bytes);
+
+  // With photos: the import waits for its files, then starts (right away, unless more photos are coming)
+  if (unpacked) {
+    await db.insert(imports).values({ id, status: "waiting_for_files", sheetFileName: input.fileName, sheetPath, sheetHash, defaultCurrency });
+    const photoResult = await savePhotos(db, id, unpacked);
+    const started = input.waitForPhotos ? null : await startImport(db, boss, id);
+    const [row] = started ? [started] : await db.select().from(imports).where(eq(imports.id, id));
+    return { import: row, alreadyRunning: false, photos: photoResult };
+  }
 
   try {
     // The import row and its job are saved in one transaction: there's never an import without a job,
@@ -97,5 +115,34 @@ export async function createImport(db: Db, boss: PgBoss, input: NewImport) {
     const winner = await findActiveImport(db, sheetHash);
     if (!winner) throw err;
     return { import: winner, alreadyRunning: true };
+  }
+}
+
+// More photos for an import that's waiting for its files (big photo sets arrive in several requests)
+export async function addPhotos(db: Db, importId: string, files: UploadedFile[]) {
+  const [imp] = await db.select({ status: imports.status }).from(imports).where(eq(imports.id, importId));
+  if (!imp) throw new UploadError("Import not found", 404);
+  if (imp.status !== "waiting_for_files") {
+    throw new UploadError("This import has already started. Photos can only be added before it starts", 409);
+  }
+  return savePhotos(db, importId, await unpackPhotos(files));
+}
+
+// Starts an import that was waiting for its photos: queues the parse job and the photo batches in one
+// transaction, so neither can go missing. Starting it twice does nothing the second time
+export async function startImport(db: Db, boss: PgBoss, importId: string) {
+  try {
+    return await db.transaction(async (tx) => {
+      const [imp] = await tx.select().from(imports).where(eq(imports.id, importId)).for("update");
+      if (!imp) throw new UploadError("Import not found", 404);
+      if (imp.status !== "waiting_for_files") return imp;
+      const [row] = await tx.update(imports).set({ status: "queued" }).where(eq(imports.id, importId)).returning();
+      await boss.send(queues.parseImport.name, { importId } satisfies ParseImportJob, { db: fromDrizzle(tx, sql), singletonKey: importId });
+      await enqueuePhotoJobs(tx, boss, importId);
+      return row;
+    });
+  } catch (err) {
+    if (!isActiveFileConflict(err)) throw err;
+    throw new UploadError("The same sheet is already being imported. Wait until it's done, then start this one again", 409);
   }
 }
