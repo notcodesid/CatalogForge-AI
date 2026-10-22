@@ -9,7 +9,7 @@ import { AiPausedError } from "@/server/ai/rate-limit";
 import { buildResponseJsonSchema, buildResponseSchema, type ProductDraft } from "@/server/ai/schema";
 import { factWords, untranslatedText, verifyDraft, wordChecker, type VerifiedDraft } from "@/server/ai/verify";
 import type { Db } from "@/server/db/client";
-import { importRows, imports, photos, products, translationState, variants } from "@/server/db/schema";
+import { importRows, imports, type PendingListing, photos, products, translationState, variants } from "@/server/db/schema";
 import { linkPhotos } from "@/server/photos/match";
 import { noteEnglishChange } from "@/server/translations/state";
 import type { BuildBatchJob } from "@/server/queue/queues";
@@ -419,7 +419,7 @@ async function saveProduct(
     const edited = new Set(existing?.merchantEditedFields ?? []);
     const pick = <T>(field: string, fresh: T, current: T | undefined) => (existing && edited.has(field) ? (current as T) : fresh);
 
-    const content = {
+    const listing = {
       title: pick("title", verified.title || key, existing?.title),
       descriptionHtml: pick("descriptionHtml", verified.descriptionHtml, existing?.descriptionHtml),
       category: pick("category", verified.category, existing?.category),
@@ -429,13 +429,36 @@ async function saveProduct(
       claims: verified.claims.map((c) => ({ ...c, source: `${imp.sheetFileName}, ${c.source}` })),
       confidence: verified.confidence,
       optionNames: verified.optionNames,
+    };
+    // What the AI wrote from, and with which instructions. A re-upload that matches them costs no AI call
+    const writtenFrom = {
       sourceRows: rows.map((r) => r.rowNumber).sort((a, b) => a - b),
       lastImportId: importId,
       sourceHash: sourceHashFor(rows),
       sourceInput: input,
+      promptVersion: PROMPT_VERSION,
+    };
+
+    // An approved product stays in the shop as it is: the new listing waits for the merchant
+    if (existing?.status === "approved") {
+      const next: PendingListing = {
+        ...listing,
+        reviewReasons: [...contentReasons, ...renamed],
+        model: outcome.model,
+        promptVersion: PROMPT_VERSION,
+        importId,
+        createdAt: new Date().toISOString(),
+      };
+      return savePendingListing(tx, existing, key, rows, variantRows, next, writtenFrom, pendingRows);
+    }
+
+    const content = {
+      ...listing,
+      ...writtenFrom,
       contentReviewReasons: contentReasons,
       model: outcome.model,
-      promptVersion: PROMPT_VERSION,
+      // The new listing replaces the old one, and any new version still waiting from when it was approved
+      pendingListing: null,
     };
 
     const productId = existing
@@ -453,7 +476,7 @@ async function saveProduct(
     // New or changed English: its translations are marked to do (queued by the worker after this batch)
     await noteEnglishChange(tx, productId);
 
-    // New English from the AI: an approved product needs another look before it's back in the shop
+    // New English from the AI (never for an approved product, see savePendingListing)
     const status: Product["status"] = reasons.length ? "needs_review" : "ready";
     const result = { status, reviewReason: reasons.length ? reasons.join("; ") : null, approvedAt: null };
     await tx
@@ -489,10 +512,25 @@ async function findExisting(tx: Tx, key: string, variantRows: BuildRow[]): Promi
 
 type SavedVariants = { problems: string[]; changed: boolean; pricedByHand: Set<string> };
 
+// "€32.00", the way the merchant reads a price
+function money(cents: number, currency: string) {
+  return new Intl.NumberFormat("en", { style: "currency", currency }).format(cents / 100);
+}
+
+// The start of the note below, to find it again (it goes away once the merchant types a new price for that SKU)
+export const sheetPriceNoteStart = (sku: string) => `SKU ${sku}: the supplier's sheet now says `;
+
+// A price the merchant typed always wins over the sheet's, but a sheet that brings a new, different price for that
+// SKU is pointed out
+function sheetPriceNote(sku: string, sheetCents: number, sheetCurrency: string, mineCents: number, mineCurrency: string) {
+  return `${sheetPriceNoteStart(sku)}${money(sheetCents, sheetCurrency)} (you set ${money(mineCents, mineCurrency)}). Change it in Edit if you want theirs`;
+}
+
 // Variants come from our cleaned rows, never from the AI: the AI only names what a colour or size column really
 // holds (names: { color: "scent" }; previous: the names the product had). Returns what needs a person (SKUs that
-// belong to another product, variants from an earlier upload, not in this file, that still have no price), whether
-// any variant changed, and the skuKey()s of the variants whose price the merchant set by hand
+// belong to another product, variants from an earlier upload, not in this file, that still have no price, a new
+// sheet price under one the merchant typed), whether any variant changed, and the skuKey()s of the variants whose
+// price the merchant set by hand
 async function saveVariants(
   tx: Tx,
   productId: string,
@@ -532,6 +570,8 @@ async function saveVariants(
   let changed = false;
   for (const { sku, replaced, ...fresh } of wanted) {
     const before = current.get(sku);
+    // The sheet's own price is remembered even when the merchant's wins, so it's only pointed out when it's new
+    const sheet = { sheetPriceCents: fresh.priceCents, sheetCurrency: fresh.currency };
     // A file without a colour or weight column (a price list) doesn't erase what an earlier file said, and a price
     // the merchant set by hand stays theirs
     const values = before
@@ -540,8 +580,15 @@ async function saveVariants(
           options: { ...Object.fromEntries(Object.entries(before.options).filter(([k]) => !replaced.includes(k))), ...fresh.options },
           weightGrams: fresh.weightGrams ?? before.weightGrams,
           ...(before.priceSetByHand ? { priceCents: before.priceCents, currency: before.currency } : {}),
+          ...sheet,
         }
-      : fresh;
+      : { ...fresh, ...sheet };
+    // The merchant typed their own price, and the sheet now gives a different one that it didn't give last time
+    const mine = before?.priceSetByHand && before.priceCents !== null && before.currency ? { cents: before.priceCents, currency: before.currency } : null;
+    const newSheetPrice = fresh.priceCents !== before?.sheetPriceCents || fresh.currency !== before?.sheetCurrency;
+    if (mine && fresh.priceCents !== null && fresh.currency && newSheetPrice && (fresh.priceCents !== mine.cents || fresh.currency !== mine.currency)) {
+      problems.push(sheetPriceNote(sku, fresh.priceCents, fresh.currency, mine.cents, mine.currency));
+    }
     // Nothing new: not written, so its "updated" time stays
     if (before && unchanged(before, values)) continue;
     const [saved] = await tx
@@ -579,8 +626,53 @@ async function skipDeleted(tx: Tx, importId: string, key: string, pendingRows: R
     .where(and(eq(photos.importId, importId), eq(photos.status, "matched"), eq(photos.productKey, key), eq(photos.assignedByHand, false)));
 }
 
+export const NEW_VERSION_WAITING = "A new version of the listing is waiting on the product page. The shop shows the approved one until you choose";
+
+// The fields shoppers read
+const SHOWN = ["title", "descriptionHtml", "category", "tags", "attributes", "optionNames"] as const;
+const readsTheSame = (a: Pick<PendingListing, (typeof SHOWN)[number]>, b: Pick<PendingListing, (typeof SHOWN)[number]>) =>
+  SHOWN.every((field) => stableJson(a[field]) === stableJson(b[field]));
+
+// The AI wrote a new listing for an approved product. It doesn't replace the one in the shop: it waits next to it
+// until the merchant uses it or keeps theirs (see products/review.ts), so new instructions or a newer sheet never
+// empty the shop. Prices, weights and new variants are facts from the sheet and are saved at once, as for a
+// prices-only upload. What the file found (a variant without a price...) is listed for the merchant but doesn't
+// take the product out of the shop: a shopper just can't pick a variant that has no price
+async function savePendingListing(
+  tx: Tx,
+  product: Product,
+  key: string,
+  rows: BuildRow[],
+  variantRows: BuildRow[],
+  next: PendingListing,
+  writtenFrom: Pick<Product, "sourceRows" | "lastImportId" | "sourceHash" | "sourceInput" | "promptVersion">,
+  pendingRows: ReturnType<typeof and>,
+) {
+  const saved = await saveVariants(tx, product.id, key, variantRows, product.optionNames, product.optionNames);
+  const reasons = [...rowReasons(rows, key, saved.pricedByHand), ...saved.problems];
+  await linkPhotos(tx, next.importId, { productKey: key, productId: product.id });
+  // The listing is kept, but new variants can bring new option values (a new colour) to translate
+  await noteEnglishChange(tx, product.id);
+
+  // A version that reads exactly like the listing in the shop leaves nothing to decide. One with the same content as
+  // the version already waiting keeps that one, and when it came
+  const waiting = product.pendingListing;
+  const pending = readsTheSame(next, product) ? null : waiting && unchanged(waiting, next, new Set(["importId", "createdAt"])) ? waiting : next;
+  const update = { ...writtenFrom, pendingListing: pending, reviewReason: reasons.length ? reasons.join("; ") : null };
+  await tx
+    .update(products)
+    .set({ ...update, updatedAt: updatedAtAfter(product, update, saved.changed) })
+    .where(eq(products.id, product.id));
+  const notes = pending ? [...reasons, NEW_VERSION_WAITING] : reasons;
+  await tx
+    .update(importRows)
+    .set({ status: notes.length ? "needs_review" : "done", reason: notes.length ? notes.join("; ") : null })
+    .where(pendingRows);
+}
+
 // For a product this file has nothing new to say about (see listingsToKeep): new prices, weights and variants
-// are saved, the listing stays as it is. An approved product stays approved unless a row has a problem
+// are saved, the listing stays as it is. An approved product stays in the shop: what the file found is listed for
+// the merchant, it doesn't take the product out (see savePendingListing)
 async function updatePricesOnly(db: Db, importId: string, key: string, rows: BuildRow[]) {
   const pendingRows = and(eq(importRows.importId, importId), eq(importRows.productKey, key), inArray(importRows.status, ["pending", "processing"]));
   const variantRows = rows.filter((r) => r.cleaned.role === "variant" && !r.cleaned.duplicateOfRow);
@@ -594,17 +686,19 @@ async function updatePricesOnly(db: Db, importId: string, key: string, rows: Bui
     }
     if (found.product.deletedAt) return skipDeleted(tx, importId, key, pendingRows);
     const { product } = found;
+    const approved = product.status === "approved";
     const saved = await saveVariants(tx, product.id, key, variantRows, product.optionNames, product.optionNames);
-    const reasons = [...rowReasons(rows, key, saved.pricedByHand), ...product.contentReviewReasons, ...saved.problems];
+    // The listing's own problems were looked at when it was approved: then only what this file found counts
+    const reasons = [...rowReasons(rows, key, saved.pricedByHand), ...(approved ? [] : product.contentReviewReasons), ...saved.problems];
     await linkPhotos(tx, importId, { productKey: key, productId: product.id });
     // The listing is kept, but new variants can bring new option values (a new colour) to translate
     await noteEnglishChange(tx, product.id);
-    const status: Product["status"] = reasons.length ? "needs_review" : product.status === "approved" ? "approved" : "ready";
+    const status: Product["status"] = approved ? "approved" : reasons.length ? "needs_review" : "ready";
     const reviewReason = reasons.length ? reasons.join("; ") : null;
     const next = {
       status,
       reviewReason,
-      approvedAt: status === "approved" ? product.approvedAt : null,
+      approvedAt: approved ? product.approvedAt : null,
       sourceRows: rows.map((r) => r.rowNumber).sort((a, b) => a - b),
       lastImportId: importId,
       sourceHash: sourceHashFor(rows),

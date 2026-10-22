@@ -32,6 +32,11 @@ export const productListQuery = z.object({
   importId: z.uuid().optional(),
   // Only products whose least certain field is at or below this (70 = everything the AI was unsure about)
   maxConfidence: z.coerce.number().int().min(0).max(100).optional(),
+  // true: only approved products with a new version of their listing waiting for the merchant
+  updateWaiting: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional(),
   // true: only deleted products (to restore them). Otherwise deleted products are left out
   deleted: z
     .enum(["true", "false"])
@@ -77,6 +82,7 @@ export async function listProducts(db: Db, query: ProductListQuery) {
   if (query.category) conditions.push(or(eq(products.category, query.category), sql`${products.category} like ${`${escapeLike(query.category)} > %`}`));
   if (query.importId) conditions.push(eq(products.lastImportId, query.importId));
   if (query.maxConfidence !== undefined) conditions.push(sql`${lowestConfidence} <= ${query.maxConfidence}`);
+  if (query.updateWaiting) conditions.push(isNotNull(products.pendingListing));
   const where = and(...conditions);
 
   const direction = query.order ?? (query.sort === "updatedAt" ? "desc" : "asc");
@@ -100,6 +106,7 @@ export async function listProducts(db: Db, query: ProductListQuery) {
         confidence: products.confidence,
         lowestConfidence,
         reviewReason: products.reviewReason,
+        updateWaiting: sql<boolean>`${products.pendingListing} is not null`,
         merchantEditedFields: products.merchantEditedFields,
         lastImportId: products.lastImportId,
         updatedAt: products.updatedAt,
@@ -144,6 +151,8 @@ export async function listProducts(db: Db, query: ProductListQuery) {
         lowestConfidence: r.lowestConfidence,
         confidence: r.confidence,
         reviewReason: r.reviewReason,
+        // The AI wrote a new version of this approved product's listing, waiting for the merchant
+        updateWaiting: r.updateWaiting,
         // Prices in cents. The currency is null when there's none, or when variants use different ones (see currencies)
         minPriceCents: r.minPrice,
         maxPriceCents: r.maxPrice,

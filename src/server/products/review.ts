@@ -2,15 +2,16 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { PgBoss } from "pg-boss";
 import { z } from "zod";
 import { findMentions } from "@/server/ai/claims";
+import { type OptionNames, renameOptions } from "@/server/ai/option-names";
 import { isCategory } from "@/server/ai/taxonomy";
 import type { Db } from "@/server/db/client";
 import { importRows, imports, products, translationState, variants } from "@/server/db/schema";
-import { rowReasons } from "@/server/pipeline/build";
+import { rowReasons, sheetPriceNoteStart } from "@/server/pipeline/build";
 import { cleanDescription } from "@/server/pipeline/clean/html";
 import { skuKey } from "@/server/pipeline/clean/row";
 import { cleanText } from "@/server/pipeline/clean/text";
 import { enqueuePendingTranslations, noteEnglishChange } from "@/server/translations/state";
-import { priceCurrency, type ProductDetail, productDetail, splitReasons } from "./detail";
+import { newVersionOf, priceCurrency, type ProductDetail, productDetail, splitReasons } from "./detail";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Product = typeof products.$inferSelect;
@@ -98,8 +99,9 @@ function claimWarnings(sourceText: string | null, fields: { field: string; text:
 
 // Saves the prices the merchant typed (by SKU), each in its variant's currency (see priceCurrency) and marked as
 // theirs: a re-upload of the sheet never changes it. The review reasons a new price solves go away: the sheet's
-// price problems for that SKU ("Row 9: No price", two rows with different prices) and "still has no price".
-// Returns the SKUs whose price changed and the product's review reason without the solved ones
+// price problems for that SKU ("Row 9: No price", two rows with different prices), "still has no price" and "the
+// supplier's sheet now says...". Returns the SKUs whose price changed and the product's review reason without the
+// solved ones
 async function savePrices(tx: Tx, product: Product, typed: Record<string, string>) {
   const mine = await tx.select().from(variants).where(eq(variants.productId, product.id));
   const [imp] = product.lastImportId
@@ -132,7 +134,8 @@ async function savePrices(tx: Tx, product: Product, typed: Record<string, string
     ...rowReasons(sheetRows, product.productKey, before).filter((r) => !left.has(r)),
     ...changed.map((sku) => `SKU ${sku} still has no price (from an earlier upload)`),
   ]);
-  return { changed, reviewReason: splitReasons(product.reviewReason).filter((r) => !solved.has(r)).join("; ") || null };
+  const answered = (reason: string) => changed.some((sku) => reason.startsWith(sheetPriceNoteStart(sku)));
+  return { changed, reviewReason: splitReasons(product.reviewReason).filter((r) => !solved.has(r) && !answered(r)).join("; ") || null };
 }
 
 // The merchant edits the English. Each changed field is marked as theirs (the AI never overwrites it on a
@@ -209,7 +212,9 @@ export async function editProduct(db: Db, boss: PgBoss, id: string, edit: Produc
 }
 
 // Approving puts a product in the storefront. Refused when a variant has no price: a shopper can't buy it, and we
-// never make a price up. The merchant's "sent back" note goes away; the other review reasons stay as history
+// never make a price up. The merchant has looked at the review reasons, so they're cleared: from then on, the reasons
+// of an approved product are what a later upload found (it stays in the shop, see pipeline/build.ts). The listing's
+// own problems are kept in content_review_reasons (without the "sent back" note) and come back if it's sent back
 const approvable = sql`${products.deletedAt} is null
   and exists (select 1 from ${variants} v where v.product_id = ${products.id})
   and not exists (select 1 from ${variants} v where v.product_id = ${products.id} and v.price_cents is null)`;
@@ -220,9 +225,7 @@ async function approveWhere(db: Db | Parameters<Parameters<Db["transaction"]>[0]
     update ${products} set
       status = 'approved', approved_at = now(), updated_at = now(),
       content_review_reasons = array(select r from unnest(content_review_reasons) as r where r not like ${`${SENT_BACK}%`}),
-      review_reason = nullif(array_to_string(array(
-        select r from unnest(string_to_array(review_reason, '; ')) as r where r not like ${`${SENT_BACK}%`}
-      ), '; '), '')
+      review_reason = null
     where ${products.id} in (${sql.join(
       ids.map((id) => sql`${id}::uuid`),
       sql`, `,
@@ -269,8 +272,11 @@ export async function approveProduct(db: Db, id: string) {
 }
 
 // Approves many at once: the products picked by the merchant, or every "ready" product of an import (the ones that
-// passed every check). Products that can't be approved are listed with the reason; the rest are approved
-export async function bulkApprove(db: Db, target: { ids: string[] } | { importId: string }) {
+// passed every check). A picked product that needs review is only approved when the merchant says so
+// (includeNeedsReview): otherwise it's left out and listed, so nothing is approved without being looked at. Products
+// that can't be approved are listed with the reason; the rest are approved. Approving never uses a new version
+// waiting for an approved product: only "Use the new version" does (see applyNewVersion)
+export async function bulkApprove(db: Db, target: { ids: string[]; includeNeedsReview?: boolean } | { importId: string }) {
   const ids =
     "ids" in target
       ? [...new Set(target.ids)]
@@ -281,21 +287,82 @@ export async function bulkApprove(db: Db, target: { ids: string[] } | { importId
             .where(and(eq(products.lastImportId, target.importId), eq(products.status, "ready"), isNull(products.deletedAt)))
         ).map((p) => p.id);
   const checked = await blockers(db, ids);
-  const approved = await approveWhere(
-    db,
-    ids.filter((id) => !checked.get(id)!.reason),
-  );
+  const askFirst = "ids" in target && !target.includeNeedsReview;
+  const needsReview = ids.filter((id) => askFirst && !checked.get(id)!.reason && checked.get(id)!.status === "needs_review");
+  const allowed = ids.filter((id) => !checked.get(id)!.reason && !needsReview.includes(id));
+  const approved = await approveWhere(db, allowed);
   const skipped = ids.filter((id) => checked.get(id)!.reason).map((id) => ({ id, title: checked.get(id)!.title, reason: checked.get(id)!.reason! }));
-  return { approved: approved.length, alreadyApproved: ids.filter((id) => !checked.get(id)!.reason && !approved.includes(id)).length, skipped };
+  return {
+    approved: approved.length,
+    alreadyApproved: allowed.filter((id) => !approved.includes(id)).length,
+    // Left as they are: they need review and the merchant didn't say to approve them anyway
+    needsReview: needsReview.map((id) => ({ id, title: checked.get(id)!.title })),
+    skipped,
+  };
 }
 
-// The merchant sends a product back to review, with why. It leaves the storefront until it's approved again
+// A variant's options under the new version's names: { color: "lavender" } becomes { scent: "lavender" } once the
+// new version calls the colour column "scent", and back again
+function renamedOptions(options: Record<string, string>, from: OptionNames, to: OptionNames) {
+  const plain = Object.fromEntries(Object.entries(options).map(([key, value]) => [key === from.color ? "color" : key === from.size ? "size" : key, value]));
+  return renameOptions(plain, to);
+}
+
+// "Use the new version": the listing the AI wrote for an approved product replaces the one in the shop (fields the
+// merchant changed by hand stay theirs). It stays approved: the merchant has just read it. Its English changed, so
+// its translations are made again
+export async function applyNewVersion(db: Db, boss: PgBoss, id: string) {
+  await db.transaction(async (tx) => {
+    const product = await lockProduct(tx, id);
+    const next = newVersionOf(product);
+    if (!next) throw new ProductActionError("There's no new version waiting for this product. It was used or dropped already", 409);
+    for (const v of await tx.select().from(variants).where(eq(variants.productId, id))) {
+      const options = renamedOptions(v.options, product.optionNames, next.optionNames);
+      if (JSON.stringify(options) !== JSON.stringify(v.options)) await tx.update(variants).set({ options }).where(eq(variants.id, v.id));
+    }
+    await tx
+      .update(products)
+      .set({
+        title: next.title,
+        descriptionHtml: next.descriptionHtml,
+        category: next.category,
+        tags: next.tags,
+        attributes: next.attributes,
+        claims: next.claims,
+        confidence: next.confidence,
+        optionNames: next.optionNames,
+        contentReviewReasons: next.reviewReasons,
+        model: next.model,
+        pendingListing: null,
+      })
+      .where(eq(products.id, id));
+    // Only the fields whose English really changed get translated again
+    await noteEnglishChange(tx, id);
+  });
+  await enqueuePendingTranslations(db, boss, { productIds: [id] });
+  return { id, product: await detailOf(db, id) };
+}
+
+// "Keep the current one": the waiting version is dropped, the listing in the shop stays as it is. The same sheet
+// uploaded again doesn't bring it back: the product already counts as written from that sheet with the current
+// instructions (see savePendingListing in pipeline/build.ts), so it costs no AI call either
+export async function keepCurrentListing(db: Db, id: string) {
+  const dropped = await db.transaction(async (tx) => {
+    const { pendingListing } = await lockProduct(tx, id);
+    if (pendingListing) await tx.update(products).set({ pendingListing: null }).where(eq(products.id, id));
+    return Boolean(pendingListing);
+  });
+  return { id, dropped, product: await detailOf(db, id) };
+}
+
+// The merchant sends a product back to review, with why. It leaves the storefront until it's approved again. The
+// listing's own problems are shown again with the note (approving cleared them from the review reasons)
 export async function sendBack(db: Db, id: string, reason: string) {
   const note = `${SENT_BACK}${reason.replace(/\s*;\s*/g, ", ").trim()}`;
   await db.transaction(async (tx) => {
     const product = await lockProduct(tx, id);
     const content = [note, ...product.contentReviewReasons.filter((r) => !r.startsWith(SENT_BACK))];
-    const others = splitReasons(product.reviewReason).filter((r) => !r.startsWith(SENT_BACK));
+    const others = [...new Set([...splitReasons(product.reviewReason), ...product.contentReviewReasons])].filter((r) => !r.startsWith(SENT_BACK));
     await tx
       .update(products)
       .set({ status: "needs_review", approvedAt: null, contentReviewReasons: content, reviewReason: [note, ...others].join("; ") })

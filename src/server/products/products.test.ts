@@ -5,17 +5,29 @@ import type { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mockProvider, resetMockState } from "@/server/ai/mock";
 import { createDb } from "@/server/db/client";
-import { imports, photos, products, translationState } from "@/server/db/schema";
+import { aiCalls, imports, photos, products, translationState } from "@/server/db/schema";
 import { env } from "@/server/env";
 import { runBuildBatch } from "@/server/pipeline/build";
 import { runParseImport } from "@/server/pipeline/run-parse-import";
 import { queues, type BuildBatchJob, type TranslateBatchJob } from "@/server/queue/queues";
+import { loadShopProduct } from "@/server/storefront/data";
 import { startTestBoss } from "@/test/boss";
 import { createTestImport, setShopLanguages } from "@/test/fixtures";
 import { testDatabaseUrl } from "@/test/global-setup";
 import { productDetail } from "./detail";
 import { listProducts, productListQuery } from "./list";
-import { approveProduct, bulkApprove, deleteProduct, editProduct, productEdit, restoreProduct, sendBack, typedPriceCents } from "./review";
+import {
+  applyNewVersion,
+  approveProduct,
+  bulkApprove,
+  deleteProduct,
+  editProduct,
+  keepCurrentListing,
+  productEdit,
+  restoreProduct,
+  sendBack,
+  typedPriceCents,
+} from "./review";
 
 const db = createDb(testDatabaseUrl());
 let boss: PgBoss;
@@ -303,6 +315,35 @@ describe("editProduct prices", () => {
     expect(free.product.variants).toEqual([expect.objectContaining({ priceCents: 0, currency: "GBP", priceCurrency: "GBP" })]);
   });
 
+  it("tells the merchant once when the supplier's sheet brings a new price under one they typed, without taking it out of the shop", async () => {
+    const can = (price: string, weight = "1.1 kg") => encode(`SKU,Name,Weight,Price,Currency\nCW-15,Copper Watering Can,${weight},${price},EUR\n`);
+    const note = (sheet: string) => `SKU CW-15: the supplier's sheet now says ${sheet} (you set €32.00). Change it in Edit if you want theirs`;
+    await importAndBuild("cans.csv", can("30.00"));
+    const [product] = await db.select().from(products);
+    await editProduct(db, boss, product.id, { prices: { "CW-15": "32" } });
+
+    // A ready product goes to review with the note. The merchant's price stays
+    await importAndBuild("cans.csv", can("34.00"));
+    const told = (await productDetail(db, product.id))!;
+    expect(told).toMatchObject({ status: "needs_review", reviewReasons: [note("€34.00")] });
+    expect(told.variants[0]).toMatchObject({ priceCents: 3200, priceSetByHand: true, sheetPriceCents: 3400, sheetCurrency: "EUR" });
+
+    // Approved with the merchant's price. A later sheet with the same supplier price doesn't say it again
+    expect((await approveProduct(db, product.id)).product.reviewReasons).toEqual([]);
+    await importAndBuild("cans.csv", can("34.00", "1.2 kg"));
+    expect((await productDetail(db, product.id))!).toMatchObject({ status: "approved", reviewReasons: [] });
+
+    // A new supplier price is pointed out again, and the product stays in the shop
+    await importAndBuild("cans.csv", can("36.00", "1.2 kg"));
+    const again = (await productDetail(db, product.id))!;
+    expect(again).toMatchObject({ status: "approved", reviewReasons: [note("€36.00")] });
+    expect((await list({ status: "approved" })).products[0].reviewReason).toBe(note("€36.00"));
+
+    // Taking their price in Edit answers it
+    const edited = await editProduct(db, boss, product.id, { prices: { "CW-15": "36" } });
+    expect(edited.product).toMatchObject({ status: "approved", reviewReasons: [] });
+  });
+
   it("refuses a price it can't read, with the reason", async () => {
     expect(typedPriceCents("A-1", "21.50")).toBe(2150);
     expect(typedPriceCents("A-1", "21,5")).toBe(2150);
@@ -394,12 +435,115 @@ describe("approving and sending back", () => {
       { id: can.id, title: "Watering Can", reason: "This product is deleted. Restore it first" },
       { id: missing, title: null, reason: "Product not found" },
     ]);
-    expect(await bulkApprove(db, { ids: [bowls.id] })).toEqual({ approved: 0, alreadyApproved: 1, skipped: [] });
+    expect(await bulkApprove(db, { ids: [bowls.id] })).toEqual({ approved: 0, alreadyApproved: 1, needsReview: [], skipped: [] });
 
     // Every "ready" product of the import
     const ready = await db.select().from(products).where(and(eq(products.lastImportId, importId), eq(products.status, "ready")));
     expect((await bulkApprove(db, { importId })).approved).toBe(ready.length);
     expect((await list({ status: "ready" })).total).toBe(0);
+  });
+
+  it("leaves picked products that need review alone, unless the merchant says to approve them anyway", async () => {
+    const importId = await importAndBuild(SAMPLE);
+    const bowls = await byTitle("Bamboo Bowl Set");
+    await approveProduct(db, bowls.id);
+    await sendBack(db, bowls.id, "Check the photo");
+    const [ready] = (await list({ status: "ready" })).products;
+
+    const picked = await bulkApprove(db, { ids: [bowls.id, ready.id] });
+    expect(picked).toEqual({ approved: 1, alreadyApproved: 0, needsReview: [{ id: bowls.id, title: "Bamboo Bowl Set" }], skipped: [] });
+    expect((await productDetail(db, bowls.id))!.status).toBe("needs_review");
+    // The import's own button only takes ready products
+    await bulkApprove(db, { importId });
+    expect((await productDetail(db, bowls.id))!.status).toBe("needs_review");
+
+    const anyway = await bulkApprove(db, { ids: [bowls.id], includeNeedsReview: true });
+    expect(anyway).toEqual({ approved: 1, alreadyApproved: 0, needsReview: [], skipped: [] });
+    expect((await productDetail(db, bowls.id))!.status).toBe("approved");
+  });
+
+  it("clears the review reasons when approving, and shows the listing's own problems again when it's sent back", async () => {
+    process.env.MOCK_AI_MODE = "invent";
+    await importAndBuild(SAMPLE);
+    const planter = await byTitle("Hand-thrown Terracotta Planter");
+    const removed = 'Removed claim "dishwasher-safe"';
+    expect(planter.contentReviewReasons.some((r) => r.startsWith(removed))).toBe(true);
+    await editProduct(db, boss, planter.id, { prices: { "TC-PL-30": "30" } });
+
+    const approved = await approveProduct(db, planter.id);
+    expect(approved.product.reviewReasons).toEqual([]);
+    expect(approved.product.contentReviewReasons).toEqual(planter.contentReviewReasons);
+
+    const sent = await sendBack(db, planter.id, "Check the claims");
+    expect(sent.product.reviewReasons).toEqual(["Sent back: Check the claims", ...planter.contentReviewReasons]);
+  });
+});
+
+describe("a new version waiting for an approved product", () => {
+  const bench = (description: string) => encode(`SKU,Name,Description,Price\nA-1,Garden Bench,"${description}",120\n`);
+
+  it("keeps the approved listing in the shop until the merchant uses the new one, then translates it again", async () => {
+    await importAndBuild("bench.csv", bench("Oak bench."));
+    const [product] = await db.select().from(products);
+    await editProduct(db, boss, product.id, { title: "Oak Garden Bench" });
+    await approveProduct(db, product.id);
+    // Translated (as if the worker had done it)
+    await setShopLanguages(db, true);
+    await db.insert(translationState).values([
+      { productId: product.id, locale: "de", status: "done" },
+      { productId: product.id, locale: "fr", status: "done" },
+    ]);
+    const states = async () => (await db.select().from(translationState).where(eq(translationState.productId, product.id))).map((s) => s.status);
+
+    const second = await importAndBuild("bench.csv", bench("Solid oak bench, oiled."));
+    const waiting = (await productDetail(db, product.id))!;
+    expect(waiting).toMatchObject({ status: "approved", title: "Oak Garden Bench" });
+    expect(waiting.descriptionHtml).not.toContain("oiled");
+    // The merchant's title stays theirs in the new version too: only the description changes
+    expect(waiting.newVersion).toMatchObject({ title: "Oak Garden Bench", changes: ["descriptionHtml"], reviewReasons: [], fromImport: { id: second, fileName: "bench.csv" } });
+    expect(waiting.newVersion!.descriptionHtml).toContain("Solid oak bench, oiled.");
+    // The shop and the translations still go by the approved listing, and the list points the product out
+    expect((await loadShopProduct(db, waiting.handle, "en"))!.descriptionHtml).not.toContain("oiled");
+    expect(await states()).toEqual(["done", "done"]);
+    expect((await list({ updateWaiting: "true" })).products.map((p) => [p.id, p.updateWaiting])).toEqual([[product.id, true]]);
+
+    const used = await applyNewVersion(db, boss, product.id);
+    expect(used.product).toMatchObject({ status: "approved", approvedAt: waiting.approvedAt, title: "Oak Garden Bench", newVersion: null });
+    expect(used.product.descriptionHtml).toContain("Solid oak bench, oiled.");
+    expect((await loadShopProduct(db, waiting.handle, "en"))!.descriptionHtml).toContain("oiled");
+    expect(await states()).toEqual(["pending", "pending"]);
+    const jobs = await boss.findJobs<TranslateBatchJob>(queues.translateBatch.name);
+    expect(jobs.map((j) => [j.data.locale, j.data.productIds]).sort()).toEqual([
+      ["de", [product.id]],
+      ["fr", [product.id]],
+    ]);
+    expect((await list({ updateWaiting: "true" })).total).toBe(0);
+    await expect(applyNewVersion(db, boss, product.id)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("drops the new version when the merchant keeps theirs, and the same sheet doesn't bring it back", async () => {
+    await importAndBuild("bench.csv", bench("Oak bench."));
+    const [product] = await db.select().from(products);
+    await approveProduct(db, product.id);
+    await importAndBuild("bench.csv", bench("Solid oak bench, oiled."));
+    expect((await productDetail(db, product.id))!.newVersion).not.toBeNull();
+
+    const kept = await keepCurrentListing(db, product.id);
+    expect(kept).toMatchObject({ dropped: true, product: { status: "approved", newVersion: null } });
+    expect(kept.product.descriptionHtml).not.toContain("oiled");
+    expect((await keepCurrentListing(db, product.id)).dropped).toBe(false);
+
+    const calls = (await db.select().from(aiCalls)).length;
+    await importAndBuild("bench.csv", bench("Solid oak bench, oiled."));
+    expect(await db.select().from(aiCalls)).toHaveLength(calls);
+    expect((await productDetail(db, product.id))!.newVersion).toBeNull();
+
+    // Approving never uses a waiting version: only "Use the new version" does
+    await importAndBuild("bench.csv", bench("Solid oak bench, oiled. Seats three."));
+    expect(await bulkApprove(db, { ids: [product.id] })).toMatchObject({ approved: 0, alreadyApproved: 1 });
+    const after = (await productDetail(db, product.id))!;
+    expect(after.newVersion?.descriptionHtml).toContain("Seats three.");
+    expect(after.descriptionHtml).not.toContain("Seats three.");
   });
 });
 

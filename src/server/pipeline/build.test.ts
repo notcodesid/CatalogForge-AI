@@ -1,5 +1,5 @@
 import { readFileSync, rmSync } from "node:fs";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { mockProvider, resetMockState } from "@/server/ai/mock";
 import { AiPermanentError, type AiProvider } from "@/server/ai/provider";
@@ -13,7 +13,7 @@ import { createTestImport, setShopLanguages } from "@/test/fixtures";
 import { testDatabaseUrl } from "@/test/global-setup";
 import { OUT_OF_CREDIT } from "@/server/ai/ask";
 import { PROMPT_VERSION } from "@/server/ai/prompt";
-import { runBuildBatch } from "./build";
+import { NEW_VERSION_WAITING, runBuildBatch } from "./build";
 import { runParseImport } from "./run-parse-import";
 
 const db = createDb(testDatabaseUrl());
@@ -354,18 +354,75 @@ describe("the AI step", () => {
     expect(variant.priceCents).toBe(2499);
   });
 
-  it("keeps an approved product approved when only its price changes, but not when the AI writes new English", async () => {
+  it("keeps an approved product in the shop when the AI writes it again: the new version waits, the price changes at once", async () => {
     await importAndBuild(SAMPLE);
     const bowls = await productByTitle("Bamboo Bowl Set");
     const approvedAt = new Date("2026-10-20T10:00:00Z");
     await db.update(products).set({ status: "approved", approvedAt }).where(eq(products.id, bowls.id));
 
+    // Only the price changes: no AI call, still approved
     await importAndBuild(SAMPLE, new TextEncoder().encode(readFileSync(SAMPLE, "utf8").replace("EUR 24", "EUR 26")));
-    expect(await productByTitle("Bamboo Bowl Set")).toMatchObject({ status: "approved", approvedAt });
+    expect(await productByTitle("Bamboo Bowl Set")).toMatchObject({ status: "approved", approvedAt, pendingListing: null });
 
-    const newText = readFileSync(SAMPLE, "utf8").replace("EUR 24", "EUR 26").replace("Set of 4 bamboo bowls.", "Set of 4 oiled bamboo bowls.");
-    await importAndBuild(SAMPLE, new TextEncoder().encode(newText));
-    expect(await productByTitle("Bamboo Bowl Set")).toMatchObject({ status: "ready", approvedAt: null });
+    // New text: the AI writes the listing again, but the approved one stays in the shop and the new one waits
+    const newText = readFileSync(SAMPLE, "utf8").replace("EUR 24", "EUR 27").replace("Set of 4 bamboo bowls.", "Set of 4 oiled bamboo bowls.");
+    const second = await importAndBuild(SAMPLE, new TextEncoder().encode(newText));
+    const after = await productByTitle("Bamboo Bowl Set");
+    expect(after).toMatchObject({ status: "approved", approvedAt, descriptionHtml: bowls.descriptionHtml, promptVersion: PROMPT_VERSION, lastImportId: second.id });
+    expect(after.pendingListing).toMatchObject({ title: "Bamboo Bowl Set", importId: second.id, promptVersion: PROMPT_VERSION, model: expect.stringMatching(/^mock-/) });
+    expect(after.pendingListing!.descriptionHtml).toContain("Set of 4 oiled bamboo bowls.");
+    // The price is a fact from the sheet: it's saved at once
+    expect((await db.select().from(variants).where(eq(variants.productId, bowls.id)))[0].priceCents).toBe(2700);
+    // The upload says where the new version is
+    const rows = await db.select().from(importRows).where(and(eq(importRows.importId, second.id), eq(importRows.rowNumber, 19)));
+    expect(rows).toEqual([expect.objectContaining({ status: "needs_review", reason: NEW_VERSION_WAITING })]);
+
+    // The same sheet again: no AI call, and the same version keeps waiting
+    const calls = (await db.select().from(aiCalls)).length;
+    const third = await importAndBuild(SAMPLE, new TextEncoder().encode(newText));
+    expect(third.queued).toEqual([]);
+    expect(await db.select().from(aiCalls)).toHaveLength(calls);
+    expect((await productByTitle("Bamboo Bowl Set")).pendingListing).toEqual(after.pendingListing);
+
+    // A price list has nothing new to say next to the text the new version was written from: prices only
+    const prices = await importAndBuild("prices.csv", new TextEncoder().encode("SKU,Name,Price,Currency\nBW-SET,Bamboo Bowl Set,28.00,EUR\n"));
+    expect(prices.queued.map((j) => j.keepListing)).toEqual([true]);
+    expect(await db.select().from(aiCalls)).toHaveLength(calls);
+    expect(await productByTitle("Bamboo Bowl Set")).toMatchObject({ status: "approved", approvedAt, pendingListing: after.pendingListing });
+  });
+
+  it("doesn't empty the shop when the AI's instructions change: an approved listing that would read differently waits", async () => {
+    await importAndBuild(SAMPLE);
+    // Approved, and written with older instructions. The bowls got another title back then
+    const bowls = await productByTitle("Bamboo Bowl Set");
+    const mug = await productByTitle("Stoneware Mug");
+    await db.update(products).set({ status: "approved", approvedAt: new Date() }).where(inArray(products.id, [bowls.id, mug.id]));
+    await db.update(products).set({ title: "Bowls" }).where(eq(products.id, bowls.id));
+    await db.update(products).set({ promptVersion: "build-old" });
+
+    const again = await importAndBuild(SAMPLE);
+    expect(again.queued.length).toBeGreaterThan(0);
+    const after = await db.select().from(products).where(inArray(products.id, [bowls.id, mug.id]));
+    expect(after.map((p) => p.status)).toEqual(["approved", "approved"]);
+    expect(after.find((p) => p.id === bowls.id)).toMatchObject({ title: "Bowls", pendingListing: { title: "Bamboo Bowl Set" }, promptVersion: PROMPT_VERSION });
+    // The AI wrote the mug the same way as before: nothing to decide. Its variant still has no price (two rows,
+    // two prices): that's pointed out, but the mug stays in the shop
+    const afterMug = after.find((p) => p.id === mug.id)!;
+    expect(afterMug.pendingListing).toBeNull();
+    expect(afterMug.reviewReason).toContain("Rows 4 and 5 have the same SKU MG-01 but different prices");
+    // Products that weren't approved get their new listing straight away
+    expect(new Set((await db.select().from(products)).map((p) => p.promptVersion))).toEqual(new Set([PROMPT_VERSION]));
+  });
+
+  it("keeps an approved product in the shop when a price list finds a problem, and lists it for the merchant", async () => {
+    await importAndBuild(SAMPLE);
+    const planter = await productByTitle("Hand-thrown Terracotta Planter");
+    await db.update(products).set({ status: "approved", approvedAt: new Date() }).where(eq(products.id, planter.id));
+
+    await importAndBuild("price_list.csv", new TextEncoder().encode("SKU,Name,Price\nTC-PL-20,Terracotta Planter,26.00\n"));
+    const after = await productByTitle("Hand-thrown Terracotta Planter");
+    expect(after.status).toBe("approved");
+    expect(after.reviewReason).toBe("SKU TC-PL-30 still has no price (from an earlier upload)");
   });
 
   it("updates the product but asks for a check when the same SKU now has a very different name", async () => {

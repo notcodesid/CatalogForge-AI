@@ -3,8 +3,9 @@ import { z } from "zod";
 import { getDb } from "@/server/db/client";
 import { listProducts, productListQuery } from "@/server/products/list";
 
-// GET /api/products?page=1&pageSize=25&sort=confidence&order=asc&search=planter&status=needs_review&category=Home%20%26%20Garden&importId=...&maxConfidence=69&deleted=true
-// The Products tab: one page of products, sorted, searched and filtered. Deleted products only with deleted=true
+// GET /api/products?page=1&pageSize=25&sort=confidence&order=asc&search=planter&status=needs_review&category=Home%20%26%20Garden&importId=...&maxConfidence=69&updateWaiting=true&deleted=true
+// The Products tab: one page of products, sorted, searched and filtered. Deleted products only with deleted=true,
+// approved products with a new version of their listing waiting only with updateWaiting=true
 export async function GET(request: Request) {
   await connection();
   const query = productListQuery.safeParse(Object.fromEntries(new URL(request.url).searchParams));
