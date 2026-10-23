@@ -1,10 +1,12 @@
 import { startBoss } from "@/server/queue/boss";
+import { reportBacklog } from "./backlog";
 import { startWorker } from "./handlers";
 
 async function main() {
   const boss = await startBoss("worker");
   const ai = await startWorker(boss);
   console.log(`[worker] started (AI: ${ai}), waiting for jobs`);
+  reportBacklog();
 
   let stopping = false;
   async function shutdown(signal: string) {

@@ -1,0 +1,12 @@
+# Never in the image: local settings and secrets, dependencies and builds (made inside), test output and data
+.env*
+!.env.example
+node_modules
+.next
+.git
+.vercel
+.logs
+/storage
+/samples
+coverage
+*.log

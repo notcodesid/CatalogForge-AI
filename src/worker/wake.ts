@@ -1,28 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
-import { sql } from "drizzle-orm";
 import { after } from "next/server";
-import { getDb } from "@/server/db/client";
 import { env } from "@/server/env";
 import { getApiBoss } from "@/server/queue/boss";
-import { queues } from "@/server/queue/queues";
+import { jobsLeft } from "./backlog";
 
 // Starting worker bursts on a host with no always-on machine (see serverless.ts), kept apart from the worker itself
 // so the routes that queue work don't carry the whole worker
 
 // Two at most: the one finishing and the next one it started
 const MAX_BURSTS = 2;
-
-// Jobs not finished yet, including ones that start later (a retry after its wait, a batch moved past a rate-limit
-// pause). The watchdog's own job comes back every minute, so it doesn't count
-export async function jobsLeft(): Promise<number> {
-  const names = Object.values(queues)
-    .map((q) => q.name)
-    .filter((n) => n !== queues.watchdog.name && n !== queues.ping.name);
-  const { rows } = await getDb().execute<{ n: number }>(
-    sql`select count(*)::int as n from pgboss.job where name = any(${sql.param(names)}::text[]) and state in ('created', 'retry', 'active')`,
-  );
-  return rows[0].n;
-}
 
 async function workersOnline(): Promise<number> {
   const instances = await (await getApiBoss()).getInstances();

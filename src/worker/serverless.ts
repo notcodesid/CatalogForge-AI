@@ -1,6 +1,7 @@
 import { startBoss } from "@/server/queue/boss";
 import { startWorker } from "./handlers";
-import { jobsLeft, wakeWorker } from "./wake";
+import { jobsLeft } from "./backlog";
+import { wakeWorker } from "./wake";
 
 // The worker on a host with no always-on machine (Vercel's free plan), switched on by WORKER_KEY. It runs in
 // bursts inside a web function (/api/worker): a burst starts the normal worker, takes jobs for about 3 minutes, gives

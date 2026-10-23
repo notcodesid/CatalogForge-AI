@@ -48,9 +48,10 @@ function bucketStorage(config: Env): Storage {
   const client = new S3Client({
     region: config.S3_REGION,
     endpoint: config.S3_ENDPOINT,
-    credentials: { accessKeyId: config.S3_ACCESS_KEY_ID!, secretAccessKey: config.S3_SECRET_ACCESS_KEY! },
-    // "endpoint/bucket/key" rather than "bucket.endpoint/key": R2, MinIO and local test servers all take it
-    forcePathStyle: true,
+    // Without a key, the SDK finds credentials itself: on AWS, the IAM role of the task it runs in
+    credentials: config.S3_ACCESS_KEY_ID ? { accessKeyId: config.S3_ACCESS_KEY_ID, secretAccessKey: config.S3_SECRET_ACCESS_KEY! } : undefined,
+    // "endpoint/bucket/key" rather than "bucket.endpoint/key" for another store: R2, MinIO and test servers all take it
+    forcePathStyle: Boolean(config.S3_ENDPOINT),
     // Newer SDK versions send checksum headers on every request, which R2 doesn't all accept. Only when required
     requestChecksumCalculation: "WHEN_REQUIRED",
     responseChecksumValidation: "WHEN_REQUIRED",

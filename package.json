@@ -17,6 +17,7 @@
     "db:down": "docker compose down",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:deploy": "tsx --env-file-if-exists=.env.local scripts/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "queue:ping": "tsx --env-file-if-exists=.env.local scripts/ping-worker.ts",
     "test": "vitest run",
