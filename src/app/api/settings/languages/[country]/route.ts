@@ -3,6 +3,7 @@ import { getDb } from "@/server/db/client";
 import { getApiBoss } from "@/server/queue/boss";
 import { LanguageSettingError, setCountryEnabled } from "@/server/translations/settings";
 import { revalidateStorefront } from "@/server/storefront/revalidate";
+import { wakeWorkerAfter } from "@/worker/wake";
 
 const bodySchema = z.object({ enabled: z.boolean() });
 
@@ -15,6 +16,7 @@ export async function PUT(request: Request, ctx: RouteContext<"/api/settings/lan
   if (!body.success) return Response.json({ error: 'Send JSON: { "enabled": true } or { "enabled": false }' }, { status: 400 });
   try {
     const result = await setCountryEnabled(getDb(), await getApiBoss(), country, body.data.enabled);
+    wakeWorkerAfter(request);
     // What shoppers see changed: the storefront shows it now instead of within a minute
     revalidateStorefront();
     return Response.json(result);

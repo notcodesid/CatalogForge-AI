@@ -2,8 +2,21 @@ import { z } from "zod";
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is not set. Copy .env.example to .env.local"),
+  // Neon on Vercel sets both: DATABASE_URL goes through Neon's pooler, which refuses the queue's (pg-boss)
+  // connection settings and drops our timeouts, and DATABASE_URL_UNPOOLED connects directly. The direct one wins
+  DATABASE_URL_UNPOOLED: z.string().optional(),
+  // Where uploaded files go: a local folder (STORAGE_DIR), the database itself ("database", for a demo deployment
+  // where the web app and the worker share only the database), or a bucket (set S3_BUCKET below)
+  FILE_STORAGE: z.enum(["folder", "database"]).default("folder"),
   // Folder for uploaded files while running locally
   STORAGE_DIR: z.string().min(1).default("storage"),
+  // An S3-compatible bucket for uploaded files instead (Cloudflare R2), for when the web app and the worker run on
+  // different machines. R2's endpoint is https://<account id>.r2.cloudflarestorage.com and its region "auto"
+  S3_BUCKET: z.string().optional(),
+  S3_ENDPOINT: z.string().optional(),
+  S3_REGION: z.string().default("auto"),
+  S3_ACCESS_KEY_ID: z.string().optional(),
+  S3_SECRET_ACCESS_KEY: z.string().optional(),
   // Which AI writes the products: Claude (the main one), DeepSeek, or "mock" which works offline and costs nothing
   // (tests, demo mode)
   AI_PROVIDER: z.enum(["mock", "anthropic", "deepseek"]).default("mock"),
@@ -25,7 +38,15 @@ const envSchema = z.object({
   // How many translation batches it runs at the same time, next to those. Translating is most of the AI work (two
   // languages for every product), so it can use more. Unset: the same as AI_CONCURRENCY
   AI_TRANSLATE_CONCURRENCY: z.coerce.number().int().min(1).max(40).optional(),
-});
+  // Set on a host with no always-on machine (Vercel's free plan): the worker then runs in bursts inside a web
+  // function (worker/serverless.ts), and this key guards the route that starts them. Unset: run `pnpm worker`
+  WORKER_KEY: z.string().min(16).optional(),
+}).superRefine((e, ctx) => {
+  if (!e.S3_BUCKET) return;
+  for (const key of ["S3_ENDPOINT", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"] as const) {
+    if (!e[key]) ctx.addIssue({ code: "custom", path: [key], message: `${key} is not set. It's needed with S3_BUCKET` });
+  }
+}).transform((e) => ({ ...e, DATABASE_URL: e.DATABASE_URL_UNPOOLED || e.DATABASE_URL }));
 
 export type Env = z.infer<typeof envSchema>;
 

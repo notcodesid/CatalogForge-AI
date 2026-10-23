@@ -3,6 +3,7 @@ import { getDb } from "@/server/db/client";
 import { getApiBoss } from "@/server/queue/boss";
 import { confirmTranslation, revertToAi, TranslationEditError, writeTranslation } from "@/server/translations/merchant";
 import { revalidateStorefront } from "@/server/storefront/revalidate";
+import { wakeWorkerAfter } from "@/worker/wake";
 
 const bodySchema = z.union([z.object({ confirm: z.literal(true) }), z.object({ value: z.unknown() })]);
 
@@ -36,11 +37,12 @@ export async function PUT(request: Request, ctx: RouteContext<"/api/products/[id
 
 // DELETE /api/products/:id/translations/:locale/:field - drops the merchant's own translation; the AI translates
 // the field again
-export async function DELETE(_request: Request, ctx: RouteContext<"/api/products/[id]/translations/[locale]/[field]">) {
+export async function DELETE(request: Request, ctx: RouteContext<"/api/products/[id]/translations/[locale]/[field]">) {
   const { id, locale, field } = await ctx.params;
   if (!z.uuid().safeParse(id).success) return Response.json({ error: "Product not found" }, { status: 404 });
   try {
     const result = await revertToAi(getDb(), await getApiBoss(), id, locale, field);
+    wakeWorkerAfter(request);
     // What shoppers see changed: the storefront shows it now instead of within a minute
     revalidateStorefront();
     return Response.json(result);

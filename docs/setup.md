@@ -75,3 +75,49 @@ At 10 and 16 we hit the limit a few times, and the app paused and carried on by 
 | `pnpm reset:data --yes` | Empty the app (imports, products, translations, photos, AI calls, uploaded files) before a demo or deploy. Keeps the language settings, refuses while an import runs |
 | `pnpm test` | Run tests against a separate test database |
 | `pnpm typecheck` / `pnpm lint` | Type check / lint |
+
+## Live deployment
+
+The live demo runs on free plans, with no card needed:
+
+| Part | Where |
+|---|---|
+| Web app (dashboard, shop, API) | Vercel, region `fra1` (`vercel.json`), deployed with `vercel deploy --prod` |
+| Database | Neon Postgres in Frankfurt, added through Vercel's Neon integration |
+| Uploaded files | The same database (`FILE_STORAGE=database`, table `stored_files`): Vercel and the worker share nothing else |
+| Worker | Runs in bursts inside a Vercel function (`/api/worker`, `src/worker/serverless.ts`), switched on by `WORKER_KEY` |
+
+What the free setup changes:
+
+- **Uploads are capped at 4 MB per request** (`NEXT_PUBLIC_MAX_REQUEST_MB=4`), because Vercel refuses bigger
+  requests. The browser sends photos in smaller batches and says which files are too big.
+- **The app connects to Neon directly** (`DATABASE_URL_UNPOOLED`). Neon's pooler refuses the queue's connection
+  settings.
+- **The worker runs in bursts.** There's no always-on machine on a free plan, so anything that queues work (an
+  upload, a retry, an edit to translate) starts a burst: the normal worker, in a function, for about 3 minutes. It
+  stops early when there's nothing left, and starts the next burst when there is. A burst cut off by the function's
+  300-second limit is like a worker crash, and the next one picks its jobs up again. The dashboard also starts one
+  when it sees work waiting with no worker online. Nothing runs while there's no work, so Neon can sleep.
+- **A laptop can help:** `pnpm worker:live` runs the always-on worker against the live database (`.env.deploy`,
+  git-ignored, with `DATABASE_URL` set to Neon's direct URL and `FILE_STORAGE=database`).
+- **Files in the database are for a demo.** For real use, set `S3_BUCKET` (Cloudflare R2 or S3) instead.
+
+Settings on Vercel: `DATABASE_URL` and `DATABASE_URL_UNPOOLED` (set by the Neon integration), `FILE_STORAGE=database`,
+`NEXT_PUBLIC_MAX_REQUEST_MB=4`, `WORKER_KEY` (any random string), and the AI settings (`AI_PROVIDER`,
+`ANTHROPIC_API_KEY`, `AI_REQUESTS_PER_MINUTE`, `AI_CONCURRENCY`, `AI_TRANSLATE_CONCURRENCY`). Migrations run from a
+laptop against the direct URL: `DATABASE_URL=<direct url> pnpm db:migrate`.
+
+### Scaling past the free setup
+
+The free setup is for the demo. What limits it, and what replaces it for real use:
+
+| Free setup | Its limit | For real scale |
+|---|---|---|
+| Worker in bursts inside a Vercel function | Each burst lasts about 4 minutes and starts cold (10 to 20 s); at most 2 run at once | Always-on workers, in containers or on small servers. More workers means more speed: they already share the queue and the AI rate limit safely |
+| Files in the database | Neon's free plan has 0.5 GB, and every photo is read through the database | A bucket: set `S3_BUCKET` (Cloudflare R2 or Amazon S3), already supported |
+| Uploads through Vercel | 4 MB per request | Uploads straight from the browser to the bucket with signed links (not built yet) |
+| Neon's free plan | 100 hours of compute a month, and an always-on worker keeps the database awake | A paid Postgres plan |
+
+The import pipeline is the same code in every setup: the queue, retries, crash recovery and duplicate protection
+don't change. The 10,000-row run and the crash test in the README used an always-on worker on one machine. With
+more workers, the AI provider's limits become the ceiling (see [what breaks first](write-up.md)).

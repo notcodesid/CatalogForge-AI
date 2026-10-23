@@ -103,7 +103,7 @@ src/
     metrics/        the Metrics tab's numbers, money saved, why products need review
     export/         CSV, JSON and Shopify exports
     storefront/     what the shop reads, its cache, country to language
-    storage/        where uploaded files are saved (a local folder for now)
+    storage/        where uploaded files are saved: a local folder, or an S3-compatible bucket (Cloudflare R2)
   worker/           the background worker
   test/             test setup (separate database, queue)
 scripts/            terminal scripts for testing

@@ -43,3 +43,6 @@ and the shop kept answering while the worker was down.
 | AI calls | 373 product batches, exactly 373 successful calls. Only the ~12 calls cut off mid-flight were paid twice (about a cent) |
 | Time | 20 min 21 s, crash included |
 | Cost | $1.34 ($0.49 writing, $0.85 translating) = $0.36 per 1,000 products |
+
+The live demo runs on free plans, with the worker in short bursts inside a web function. Its limits, and what
+replaces it at scale, are in [Setup: scaling past the free setup](setup.md#scaling-past-the-free-setup).

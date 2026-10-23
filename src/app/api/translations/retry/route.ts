@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getDb } from "@/server/db/client";
 import { getApiBoss } from "@/server/queue/boss";
 import { retryFailed } from "@/server/translations/state";
+import { wakeWorkerAfter } from "@/worker/wake";
 
 const bodySchema = z.object({ productIds: z.array(z.uuid()).max(1000).optional() }).default({});
 
@@ -10,5 +11,6 @@ export async function POST(request: Request) {
   const body = bodySchema.safeParse(await request.json().catch(() => ({})));
   if (!body.success) return Response.json({ error: 'Send JSON: {} or { "productIds": ["..."] }' }, { status: 400 });
   const batches = await retryFailed(getDb(), await getApiBoss(), body.data);
+  wakeWorkerAfter(request);
   return Response.json({ queuedBatches: batches });
 }

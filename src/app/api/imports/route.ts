@@ -5,6 +5,7 @@ import { createImport, MAX_SHEET_BYTES, UploadError } from "@/server/imports/cre
 import { listImports } from "@/server/imports/list";
 import { MAX_PHOTO_REQUEST_BYTES, type UploadedFile } from "@/server/photos/upload";
 import { getApiBoss } from "@/server/queue/boss";
+import { wakeWorkerAfter, wakeWorkerIfIdle } from "@/worker/wake";
 
 const listSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -17,6 +18,8 @@ export async function GET(request: Request) {
   await connection();
   const query = listSchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
   if (!query.success) return Response.json({ error: z.prettifyError(query.error) }, { status: 400 });
+  // The Upload tab polls this: a good moment to notice work waiting with no worker
+  wakeWorkerIfIdle(request);
   return Response.json(await listImports(getDb(), query.data));
 }
 
@@ -61,6 +64,7 @@ export async function POST(request: Request) {
       photos,
       waitForPhotos: form.get("waitForPhotos") === "true",
     });
+    wakeWorkerAfter(request);
     return Response.json(
       {
         id: result.import.id,

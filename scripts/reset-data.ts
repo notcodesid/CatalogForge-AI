@@ -1,12 +1,10 @@
 // Deletes every import, product, translation, photo and AI call, and the uploaded files, so the app starts empty
 // (before a demo or a deploy). Which countries get which language is kept: that's the shop's settings, not data.
 // Run with: pnpm reset:data --yes
-import { rm } from "node:fs/promises";
-import path from "node:path";
 import { inArray, sql } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { imports } from "@/server/db/schema";
-import { env } from "@/server/env";
+import { deleteStoredFolder } from "@/server/storage";
 
 async function main() {
   if (!process.argv.includes("--yes")) {
@@ -22,8 +20,9 @@ async function main() {
   await db.execute(sql`truncate imports, import_rows, photos, products, variants, translations, translation_state, ai_calls, ai_cache, ai_status`);
   // Jobs left in the queue would point at imports that are gone. The queue's tables only exist once the worker ran
   await db.execute(sql`do $$ begin if to_regclass('pgboss.job') is not null then delete from pgboss.job; end if; end $$`);
-  // The uploaded files, and the resized photos (stored by content, so no longer used by any product)
-  for (const folder of ["imports", "photos"]) await rm(path.resolve(env().STORAGE_DIR, folder), { recursive: true, force: true });
+  // The uploaded files, and the resized photos (stored by content, so no longer used by any product). In the
+  // local folder or the bucket, wherever they are
+  for (const folder of ["imports", "photos"]) await deleteStoredFolder(folder);
   console.log("Done: the app is empty. Language settings were kept.");
   await db.$client.end();
 }

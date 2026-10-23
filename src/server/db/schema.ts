@@ -4,6 +4,7 @@ import {
   boolean,
   char,
   check,
+  customType,
   index,
   integer,
   jsonb,
@@ -376,4 +377,16 @@ export const aiStatus = pgTable("ai_status", {
     .notNull()
     .defaultNow()
     .$onUpdate(() => new Date()),
+});
+
+// Raw bytes. Drizzle has no built-in column for them
+const bytea = customType<{ data: Buffer }>({ dataType: () => "bytea" });
+
+// Uploaded files kept in the database itself (FILE_STORAGE=database, see storage/index.ts): for a host where the web
+// app and the worker share nothing but the database. Fine for a demo's few megabytes; a bucket is the real answer
+export const storedFiles = pgTable("stored_files", {
+  // "imports/<id>/sheet.csv", "photos/<hash>.webp"
+  key: text().primaryKey(),
+  data: bytea().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });

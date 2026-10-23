@@ -10,6 +10,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "worker": "tsx --env-file-if-exists=.env.local src/worker/index.ts",
     "worker:dev": "tsx watch --env-file-if-exists=.env.local src/worker/index.ts",
+    "worker:live": "tsx --env-file=.env.deploy src/worker/index.ts",
     "worker:demo-pause": "AI_PROVIDER=mock MOCK_AI_MODE=ratelimit:120 tsx --env-file-if-exists=.env.local src/worker/index.ts",
     "worker:demo-fail": "AI_PROVIDER=mock MOCK_AI_MODE=fail:4 tsx --env-file-if-exists=.env.local src/worker/index.ts",
     "db:up": "docker compose up -d --wait",
@@ -24,6 +25,7 @@
     "reset:data": "tsx --env-file-if-exists=.env.local scripts/reset-data.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1156.0",
     "@tanstack/react-table": "^9.3.1",
     "drizzle-orm": "^0.45.4",
     "next": "16.4.2",

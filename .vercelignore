@@ -1,0 +1,5 @@
+# Never upload local settings and secrets, test output or uploaded files when deploying with the Vercel CLI
+.env*
+!.env.example
+/.logs
+/storage

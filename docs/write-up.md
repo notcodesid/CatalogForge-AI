@@ -59,8 +59,9 @@
 3. **Counting queries.** 40 million translation rows (1M products x 8 languages x 5 fields): coverage and "is the
    import done" queries that count rows get slow. Fix: per-import and per-language counters updated with the rows,
    or summary tables refreshed in the background.
-4. **Storage and search.** Photos on local disk move to object storage behind a CDN; the product list needs
-   keyset pagination and a search index (pg_trgm or full-text) instead of OFFSET and ILIKE.
+4. **Storage and search.** Deployed, photos are already in object storage (R2), but every photo is still served
+   through the web app; a CDN in front of the bucket should serve them instead. The product list needs keyset
+   pagination and a search index (pg_trgm or full-text) instead of OFFSET and ILIKE.
 
 **What did you learn?** *(to write in your own words)*
 

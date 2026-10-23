@@ -5,6 +5,7 @@ import { productDetail } from "@/server/products/detail";
 import { deleteProduct, editProduct, ProductActionError, productEdit } from "@/server/products/review";
 import { getApiBoss } from "@/server/queue/boss";
 import { revalidateStorefront } from "@/server/storefront/revalidate";
+import { wakeWorkerAfter } from "@/worker/wake";
 
 const notFound = () => Response.json({ error: "Product not found" }, { status: 404 });
 
@@ -39,6 +40,7 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/products/[
   if (!body.success) return Response.json({ error: z.prettifyError(body.error) }, { status: 400 });
   try {
     const result = await editProduct(getDb(), await getApiBoss(), id, body.data);
+    wakeWorkerAfter(request);
     // What shoppers see changed: the storefront shows it now instead of within a minute
     revalidateStorefront();
     return Response.json(result);
