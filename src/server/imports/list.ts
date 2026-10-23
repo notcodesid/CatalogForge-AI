@@ -1,7 +1,7 @@
 import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@/server/db/client";
 import { aiStatus, importRows, imports, photos, photoStatus, products, rowStatus, translationState } from "@/server/db/schema";
-import { phaseOf, productOutcomes } from "./queries";
+import { phaseOf, productOutcomes, retryingBatches } from "./queries";
 
 type RowStatus = (typeof rowStatus.enumValues)[number];
 type PhotoStatus = (typeof photoStatus.enumValues)[number];
@@ -32,7 +32,7 @@ export async function listImports(db: Db, options: { limit: number; offset: numb
   const ids = page.map((imp) => imp.id);
   if (!ids.length) return { total, imports: [] };
 
-  const [rowCounts, productCounts, outcomes, photoCounts, translationCounts] = await Promise.all([
+  const [rowCounts, productCounts, outcomes, photoCounts, translationCounts, retrying] = await Promise.all([
     db
       .select({ importId: importRows.importId, status: importRows.status, n: count() })
       .from(importRows)
@@ -63,6 +63,8 @@ export async function listImports(db: Db, options: { limit: number; offset: numb
       .groupBy(products.lastImportId, translationState.locale, translationState.status)
       // Every card lists the languages in the same order
       .orderBy(translationState.locale),
+    // AI batches tried again after an error, only for the imports still running
+    retryingBatches(db, page.filter((imp) => imp.status === "running").map((imp) => imp.id)),
   ]);
 
   // "Paused — resuming in X minutes": the pause is shared by every import, so it's read once
@@ -100,6 +102,7 @@ export async function listImports(db: Db, options: { limit: number; offset: numb
         phase: phaseOf(imp, rows, photoSummary.waitingToBeProcessed, translations),
         pausedUntil: imp.status === "paused" ? (pause?.until ?? null) : null,
         pauseReason: imp.status === "paused" ? (pause?.reason ?? null) : null,
+        retrying: retrying.get(imp.id) ?? null,
         error: imp.error,
         totalRows: imp.totalRows,
         rows,

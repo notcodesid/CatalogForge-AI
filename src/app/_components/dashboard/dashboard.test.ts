@@ -3,7 +3,7 @@ import { MAX_SHEET_BYTES } from "@/server/imports/create-import";
 import { MAX_PHOTO_BYTES, MAX_PHOTO_REQUEST_BYTES, MAX_PHOTOS_PER_IMPORT } from "@/server/photos/upload";
 import type { ImportSummary } from "./api";
 import { formatBytes, formatDuration, resumingIn, timeAgo } from "./format";
-import { nextStep, nowDoing, photosLine, productsLine, rowsLine } from "./import-progress";
+import { nextStep, nowDoing, photosLine, productsLine, retryingLine, rowsLine } from "./import-progress";
 import { LIMITS, PHOTO_BATCH } from "./limits";
 import { EMPTY, photoBatches, sortFiles } from "./upload-files";
 
@@ -75,6 +75,7 @@ describe("import progress on the Upload tab", () => {
     phase: "writing products",
     pausedUntil: null,
     pauseReason: null,
+    retrying: null,
     error: null,
     totalRows: 13,
     rows: { pending: 6, processing: 2, done: 4, needs_review: 1, failed: 0 },
@@ -99,6 +100,11 @@ describe("import progress on the Upload tab", () => {
       "Translating: German 3 of 6, French 2 of 6",
     );
     expect(nowDoing(summary({ phase: "reading the sheet" }))).toBe("Reading the sheet…");
+  });
+
+  it("says when the AI failed and it's trying again", () => {
+    expect(retryingLine({ products: 3, attempt: 2, attempts: 4 })).toBe("The AI returned an error for 3 products. Trying again: try 2 of 4");
+    expect(retryingLine({ products: 1, attempt: 4, attempts: 4 })).toBe("The AI returned an error for 1 product. Trying again: try 4 of 4");
   });
 
   it("says the photos arrived, then what came of them", () => {

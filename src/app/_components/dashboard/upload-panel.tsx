@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { ApiError, postForm, postJson } from "./api";
 import { asSentence, formatBytes, formatCount, resumingIn } from "./format";
-import { nextStep, nowDoing, photosLine, productsLine, rowsLine } from "./import-progress";
+import { nextStep, nowDoing, photosLine, productsLine, retryingLine, rowsLine } from "./import-progress";
 import { CURRENCIES, LIMITS } from "./limits";
 import { buttonClasses, focusClasses, linkClasses, Meter, Spinner } from "./ui";
 import { EMPTY, isZip, photoBatches, sortFiles, type Picked } from "./upload-files";
@@ -421,6 +421,7 @@ function StartedImport({ importId, photos }: { importId: string; photos?: PhotoR
         <p className="mt-1">
           {!summary ? "Starting…" : summary.status === "paused" ? `Paused, ${resumingIn(summary.pausedUntil)}. Nothing is lost: it carries on by itself.` : nowDoing(summary)}
         </p>
+        {summary?.retrying && <p className="mt-1 text-warning">{retryingLine(summary.retrying)}.</p>}
         {photoText && <p className="mt-1">{photoText}</p>}
         <p className="mt-1 text-muted-foreground">You can leave this page: it keeps going in the background.</p>
         <div className="mt-3">{viewImport}</div>

@@ -7,7 +7,7 @@ import { createDb } from "@/server/db/client";
 import { env } from "@/server/env";
 import { runBuildBatch } from "@/server/pipeline/build";
 import { runParseImport } from "@/server/pipeline/run-parse-import";
-import type { BuildBatchJob } from "@/server/queue/queues";
+import { type BuildBatchJob, queues } from "@/server/queue/queues";
 import { enqueuePendingTranslations } from "@/server/translations/state";
 import { startTestBoss } from "@/test/boss";
 import { setShopLanguages } from "@/test/fixtures";
@@ -84,6 +84,33 @@ describe("listImports", () => {
     expect(first.imports.map((i) => i.fileName)).toEqual(["c.csv", "b.csv"]);
     expect(second.imports.map((i) => i.fileName)).toEqual(["a.csv"]);
     expect(second.total).toBe(3);
+  });
+
+  it("shows the AI batches that failed and are being tried again", async () => {
+    const { import: imp } = await createImport(db, boss, { fileName: "sheet.csv", bytes: readFileSync(SAMPLE) });
+    const queued: BuildBatchJob[] = [];
+    await runParseImport(db, imp.id, { enqueueBuild: async (_tx, jobs) => void queued.push(...jobs.map((j) => j.data)) });
+    const name = queues.buildBatch.name;
+    const retrying = async () => {
+      const listed = (await listImports(db, { limit: 20, offset: 0 })).imports[0].retrying;
+      expect((await getImportSummary(db, imp.id))!.retrying).toEqual(listed);
+      return listed;
+    };
+
+    // Waiting for its first try isn't trying again
+    const id = (await boss.send(name, queued[0]))!;
+    expect(await retrying()).toBeNull();
+    // The first try failed: it waits for the second of 4
+    await boss.fetch(name);
+    await boss.fail(name, id, { message: "Provider overloaded (503)" });
+    const products = queued[0].productKeys.length;
+    expect(await retrying()).toEqual({ products, attempt: 2, attempts: 4 });
+    // The second try is running, then fails too
+    await db.execute(sql`update pgboss.job set start_after = now() where id = ${id}`);
+    await boss.fetch(name);
+    expect(await retrying()).toEqual({ products, attempt: 2, attempts: 4 });
+    await boss.fail(name, id, { message: "Provider overloaded (503)" });
+    expect(await retrying()).toEqual({ products, attempt: 3, attempts: 4 });
   });
 
   it("is empty before the first upload", async () => {

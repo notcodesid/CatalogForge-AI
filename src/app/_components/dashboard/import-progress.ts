@@ -23,6 +23,12 @@ export function nowDoing(s: ImportSummary): string {
   return `${capitalize(s.phase)}…`;
 }
 
+// "The AI returned an error for 3 products. Trying again: try 2 of 4". Without it the card only says "Waiting 3"
+// for minutes while the worker retries, and looks stuck
+export function retryingLine(r: NonNullable<ImportListItem["retrying"]>): string {
+  return `The AI returned an error for ${plural(r.products, "product")}. Trying again: try ${formatCount(r.attempt)} of ${formatCount(r.attempts)}`;
+}
+
 // "14 photos received, matching them to products…" until they're matched, then what came of them
 export function photosLine(s: ImportSummary): string | null {
   const p = s.photos;

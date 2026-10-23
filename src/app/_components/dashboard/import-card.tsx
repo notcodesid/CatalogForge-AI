@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { ApiError, postJson, type ImportListItem, type RetryResult } from "./api";
 import { asSentence, capitalize, formatCount, formatDuration, resumingIn, timeAgo } from "./format";
-import { productsLine } from "./import-progress";
+import { productsLine, retryingLine } from "./import-progress";
 import { IMPORT_STATUS, LANGUAGE_NAMES, ROW_STATUS } from "./statuses";
 import { Badge, buttonClasses, Dot, linkClasses, ProgressBar } from "./ui";
 
@@ -36,6 +36,12 @@ function retryResultText(result: RetryResult) {
 
 export function ImportCard({ imp, onChanged, headingLevel = 3, showDetailsLink = true }: { imp: CardImport; onChanged?: () => void; headingLevel?: 2 | 3; showDetailsLink?: boolean }) {
   const [action, setAction] = useState<{ busy: boolean; message?: string; failed?: boolean }>({ busy: false });
+  // "Trying 4 rows again" is news until the import finishes again: then the counts say how it went
+  const [finishedAt, setFinishedAt] = useState(imp.finishedAt);
+  if (imp.finishedAt !== finishedAt) {
+    setFinishedAt(imp.finishedAt);
+    if (imp.finishedAt && action.message && !action.failed) setAction({ busy: false });
+  }
   const Heading = headingLevel === 2 ? "h2" : "h3";
   const status = IMPORT_STATUS[imp.status];
   const { rows, photos } = imp;
@@ -84,6 +90,12 @@ export function ImportCard({ imp, onChanged, headingLevel = 3, showDetailsLink =
           <span className="font-medium text-paused">Paused — {resumingIn(imp.pausedUntil)}.</span> {asSentence(imp.pauseReason ?? "The AI provider asked us to slow down")}
           {/* The reason may already say it carries on by itself (out of credit) */}
           {!/carries on/i.test(imp.pauseReason ?? "") && " Nothing is lost: it carries on by itself."}
+        </p>
+      )}
+      {imp.status === "running" && imp.retrying && (
+        <p className="rounded-md bg-warning-soft px-3 py-2 text-sm">
+          <span className="font-medium text-warning">{retryingLine(imp.retrying)}.</span> Products that still fail after the last try are marked Failed, and you
+          can try them again.
         </p>
       )}
       {imp.status === "failed" && (

@@ -23,6 +23,8 @@ export type ImportListItem = {
   phase: string;
   pausedUntil: string | null;
   pauseReason: string | null;
+  // AI batches that failed and are being tried again
+  retrying: { products: number; attempt: number; attempts: number } | null;
   error: string | null;
   totalRows: number | null;
   rows: RowCounts;
