@@ -177,11 +177,19 @@ export function verifyDraft(draft: ProductDraft, input: ProductInput): VerifiedD
   // A size column that really holds something else (pack counts, scents) isn't a measurement
   const sizeIsMeasurement = !optionNames.size || isMeasurement(optionNames.size);
   const hasSizes = input.variants.some((v) => (v.size && sizeIsMeasurement) || Object.keys(v.options).some(isMeasurement));
+  // An attribute the AI isn't sure about is left out instead of sent to review: it's an extra the AI offers, not
+  // something the supplier gave, so a guess has no place in the listing. Seen on the 5,000-row sheet: "Made from
+  // durable materials" became "material: durable materials" at 40%, and 1,507 products went to review for it
+  const unsure = new Set(
+    Object.entries(draft.confidence)
+      .filter(([field, value]) => field.startsWith("attributes.") && value < CONFIDENCE_THRESHOLD)
+      .map(([field]) => cleanText(field.slice("attributes.".length))?.toLowerCase()),
+  );
   const attributes: Record<string, string> = {};
   for (const [name, value] of Object.entries(draft.attributes)) {
     const key = cleanText(name)?.toLowerCase();
     const text = cleanText(value);
-    if (key && text && !variantFacts.has(key) && !(hasSizes && isMeasurement(key))) attributes[key] = text;
+    if (key && text && !unsure.has(key) && !variantFacts.has(key) && !(hasSizes && isMeasurement(key))) attributes[key] = text;
   }
 
   // Claims: the quote must really be in the supplier's text, and a risky claim must be what that text says,

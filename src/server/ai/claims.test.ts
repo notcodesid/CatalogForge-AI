@@ -15,6 +15,10 @@ describe("findMentions", () => {
     // Within one clause a denial still covers everything after it
     expect(said("Not organic or recycled")).toEqual(["not organic", "not recycled"]);
     expect(said("Not suitable for dishwasher, microwave or oven")).toEqual(["not microwave-safe"]);
+    // Never into the next sentence. Seen on the 5,000-row sheet: a material "(not specified)" next to "FSC certified"
+    // made the English look like it denies FSC, and the correct German "FSC-zertifiziert" was flagged
+    expect(said("durable material (not specified). FSC certified")).toEqual(["fsc-certified"]);
+    expect(said("Not for outdoor use. Frost-resistant")).toEqual(["frost-resistant"]);
   });
 
   it("knows care instructions in English, German and French", () => {

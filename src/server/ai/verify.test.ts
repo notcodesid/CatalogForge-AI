@@ -141,9 +141,15 @@ describe("verifyDraft", () => {
     expect(verifyDraft(draft({ key: german.key, title: "Garden Bench", description_html: "<p>Solid oiled oak bench.</p>" }), german).reviewReasons).toEqual([]);
   });
 
-  it("sends low-confidence fields to review", () => {
-    const result = verifyDraft(draft({ attributes: { care: "Bring indoors below 0 °C" }, confidence: { title: 95, category: 64, "attributes.care": 50 } }), input);
-    expect(result.reviewReasons).toEqual(["The AI isn't sure about: category (64%), attributes.care (50%)"]);
+  it("sends low-confidence fields to review, and leaves out an attribute the AI isn't sure about", () => {
+    const result = verifyDraft(
+      draft({ attributes: { care: "Bring indoors below 0 °C", material: "durable materials" }, confidence: { title: 95, category: 64, "attributes.care": 90, "attributes.Material": 40 } }),
+      input,
+    );
+    expect(result.reviewReasons).toEqual(["The AI isn't sure about: category (64%)"]);
+    // Seen on the 5,000-row sheet: "Made from durable materials" became a material the AI wasn't sure of
+    expect(result.attributes).toEqual({ care: "Bring indoors below 0 °C" });
+    expect(result.confidence).toEqual({ title: 95, category: 64, "attributes.care": 90 });
   });
 
   it("keeps the AI's own review reason on one line", () => {

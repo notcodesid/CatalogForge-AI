@@ -81,13 +81,20 @@ const sameWord = (word: string, part: string) => word === part || (part.length >
 
 // Every risky claim the text makes or denies
 export function findMentions(text: string): Mention[] {
-  // Each word with the number of the clause it's in (clauses end at commas, full stops, brackets...)
-  const words = text.split(/[,;:.!?()[\]]/).flatMap((clause, n) =>
-    normalizeForMatch(clause)
+  // Each word with the number of the clause it's in (clauses end at commas, full stops, brackets...) and of the
+  // sentence (only full stops, semicolons, colons and brackets end one, not commas)
+  const pieces = text.split(/([,;:.!?()[\]])/);
+  let sentence = 0;
+  const words = pieces.flatMap((piece, i) => {
+    if (i % 2 === 1) {
+      if (piece !== ",") sentence++;
+      return [];
+    }
+    return normalizeForMatch(piece)
       .split(" ")
       .filter(Boolean)
-      .map((word) => ({ word, clause: n })),
-  );
+      .map((word) => ({ word, clause: i / 2, sentence }));
+  });
   const found: { concept: ClaimConcept; phrase: string; start: number; end: number }[] = [];
   for (const concept of CLAIM_CONCEPTS) {
     for (const phrase of concept.phrases) {
@@ -99,10 +106,13 @@ export function findMentions(text: string): Mention[] {
   }
   return found.map(({ concept, phrase, start, end }) => {
     // A negation that already went to a claim in an earlier clause stops there: in "not dishwasher safe, hand wash
-    // only" the "not" is about the dishwasher alone. Within one clause it reaches on: "not organic or recycled"
-    const clause = words[start].clause;
+    // only" the "not" is about the dishwasher alone. Within one clause it reaches on: "not organic or recycled". It
+    // never reaches into the next sentence: in "durable material (not specified). FSC certified" FSC isn't denied
+    const { clause, sentence } = words[start];
     const used = found.filter((m) => m.end <= start && words[m.end - 1].clause < clause).map((m) => words[m.end - 1].clause);
-    const before = words.slice(Math.max(0, start - NEGATION_REACH), start).filter((w) => w.clause > Math.max(-1, ...used));
+    const before = words
+      .slice(Math.max(0, start - NEGATION_REACH), start)
+      .filter((w) => w.clause > Math.max(-1, ...used) && w.sentence === sentence);
     const near = words.slice(Math.max(0, start - QUALIFIER_REACH), end + QUALIFIER_REACH).filter((w) => w.clause === clause);
     return { concept, phrase, negated: before.some((w) => NEGATIONS.has(w.word)), qualified: near.some((w) => isQualifier(w.word)) };
   });
