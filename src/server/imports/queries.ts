@@ -2,6 +2,7 @@ import { and, asc, count, countDistinct, eq, inArray, isNotNull, sql } from "dri
 import type { Db } from "@/server/db/client";
 import { aiStatus, importRows, imports, photos, photoStatus, products, rowStatus, translationState, variants } from "@/server/db/schema";
 import { DELETED_SKIP } from "@/server/pipeline/build";
+import { queues } from "@/server/queue/queues";
 import { translationCounts } from "@/server/translations/coverage";
 
 type RowStatus = (typeof rowStatus.enumValues)[number];
@@ -69,6 +70,7 @@ export async function getImportSummary(db: Db, importId: string) {
   };
 
   const translations = await translationCounts(db, importId);
+  const retrying = imp.status === "running" ? ((await retryingBatches(db, [importId])).get(importId) ?? null) : null;
 
   const outcomes = (await productOutcomes(db, [importId])).get(importId)!;
   const fromFiles = imp.status === "done" && outcomes.updated > 0 ? await earlierFiles(db, importId) : [];
@@ -82,6 +84,8 @@ export async function getImportSummary(db: Db, importId: string) {
     phase: phaseOf(imp, rows, photoSummary.waitingToBeProcessed, translations),
     pausedUntil: pause?.until ?? null,
     pauseReason: pause?.reason ?? null,
+    // AI batches that failed and are being tried again: "trying again, try 2 of 4"
+    retrying,
     error: imp.error,
     defaultCurrency: imp.defaultCurrency,
     totalRows: imp.totalRows,
@@ -120,6 +124,38 @@ export function phaseOf(
   if (photosWaiting > 0) return "processing photos";
   if (Object.values(translations).some((t) => t.pending > 0)) return "translating";
   return "finishing";
+}
+
+// AI batches of these imports that failed (an error or a timeout) and get another try: how many products they
+// hold, the try they're on and how many they get. The queue's own table counts the tries: a batch waiting for its
+// next try is in "retry" (its count still that of the try that failed), one being tried again is "active" with a
+// count. A batch moved for a rate-limit pause is a new job, not a failed try. Shared with the import list (list.ts)
+export type Retrying = { products: number; attempt: number; attempts: number };
+
+let queueTableExists = false;
+
+export async function retryingBatches(db: Db, importIds: string[]): Promise<Map<string, Retrying>> {
+  const found = new Map<string, Retrying>();
+  if (!importIds.length) return found;
+  // The queue's tables only exist once pg-boss has started on this database
+  if (!queueTableExists) {
+    const { rows } = await db.execute<{ exists: boolean }>(sql`select to_regclass('pgboss.job') is not null as exists`);
+    queueTableExists = rows[0].exists;
+    if (!queueTableExists) return found;
+  }
+  const { rows } = await db.execute<{ import_id: string; products: number; attempt: number; attempts: number }>(sql`
+    select data->>'importId' as import_id,
+      sum(coalesce(jsonb_array_length(data->'productKeys'), jsonb_array_length(data->'productIds'), 0))::int as products,
+      max(case when state = 'retry' then retry_count + 2 else retry_count + 1 end)::int as attempt,
+      max(retry_limit + 1)::int as attempts
+    from pgboss.job
+    where name in (${queues.buildBatch.name}, ${queues.translateBatch.name})
+      and data->>'importId' = any(${sql.param(importIds)}::text[])
+      and (state = 'retry' or (state = 'active' and retry_count > 0))
+    group by 1
+  `);
+  for (const r of rows) found.set(r.import_id, { products: r.products, attempt: r.attempt, attempts: r.attempts });
+  return found;
 }
 
 // Each product of these imports (its rows with the same product key) and the catalog product its rows were saved
