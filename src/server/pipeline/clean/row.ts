@@ -6,13 +6,15 @@ import { cleanDescription, LONG_DESCRIPTION_CHARS } from "./html";
 import { detectLanguage } from "./language";
 import { formatPrice, parsePrice } from "./price";
 import { cleanText, fixMojibake } from "./text";
-import { parseSize, parseWeight } from "./units";
+import { parseSize, parseWeight, weightUnitFor, type WeightUnitGuess } from "./units";
 
 export type RowContext = {
   defaultCurrency: string;
   hints: ColumnHints;
   // Decimal separator the price column uses, see detectDecimalSeparator
   decimalSeparator: "," | "." | null;
+  // The unit most of the weight column uses, for a weight written without one (see detectWeightUnit)
+  weightUnit?: WeightUnitGuess | null;
 };
 
 export type RowInput = {
@@ -94,8 +96,10 @@ export function cleanRow(input: RowInput, ctx: RowContext): CleanRowResult {
   const size = parseSize(cleanText(f.size) ?? options.size, ctx.hints.sizeUnit);
   if (size?.problem) review("size", size.problem);
 
-  const weight = parseWeight(f.weight, ctx.hints.weightUnit);
+  const columnUnit = ctx.hints.weightUnit ? null : weightUnitFor(f.weight, ctx.weightUnit ?? null);
+  const weight = parseWeight(f.weight, ctx.hints.weightUnit ?? columnUnit ?? undefined);
   if (weight && !weight.ok) review("weight", weight.reason);
+  else if (weight && columnUnit) info("weight", `Weight "${cleanText(f.weight)}" has no unit, read as ${columnUnit} like the rest of the column`);
 
   const price = parsePrice(f.price, {
     currencyColumn: f.currency,

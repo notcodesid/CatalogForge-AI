@@ -55,3 +55,17 @@ describe("row roles", () => {
     expect(cleaned.issues).toEqual([{ field: "image", severity: "info", message: "Extra photo for this product" }]);
   });
 });
+
+describe("weights", () => {
+  it("reads a weight without a unit in the column's unit, and says so", () => {
+    const row = (weight: string) =>
+      cleanRow({ fields: { sku: "W-1", title: "Planter", price: "10", weight }, extra: {}, options: [], role: "variant" }, { ...ctx, weightUnit: { unit: "kg", min: 0.3, max: 2.4 } });
+    const fits = row("1.7");
+    expect(fits.cleaned.weightGrams).toBe(1700);
+    expect(fits.cleaned.issues).toContainEqual({ field: "weight", severity: "info", message: 'Weight "1.7" has no unit, read as kg like the rest of the column' });
+    // Out of the column's range: still a person's call
+    const outside = row("800");
+    expect(outside.cleaned.weightGrams).toBeNull();
+    expect(outside.cleaned.issues.map((i) => i.severity)).toContain("review");
+  });
+});

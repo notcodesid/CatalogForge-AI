@@ -7,6 +7,7 @@ import type { BuildBatchJob } from "@/server/queue/queues";
 import { linkPhotos, planPhotoMatches, saveLinkPhotos, saveMatches } from "@/server/photos/match";
 import { readStoredFile } from "@/server/storage";
 import { detectDecimalSeparator } from "./clean/price";
+import { detectWeightUnit } from "./clean/units";
 import { cleanRow } from "./clean/row";
 import { detectSheetType } from "./detect-file-type";
 import { batchKey, DELETED_PHOTO, DELETED_SKIP, finishImportIfComplete, groupByProduct, planBuildBatches, sourceHashFor } from "./build";
@@ -175,6 +176,8 @@ async function cleanStage(ctx: AttemptContext, imp: Import) {
 
   const priceHeader = info.columns.price;
   const decimalSeparator = detectDecimalSeparator(rows.map((r) => (priceHeader ? r.raw[priceHeader] : null)));
+  const weightHeader = info.columns.weight;
+  const weightUnit = weightHeader ? detectWeightUnit(rows.map((r) => r.raw[weightHeader])) : null;
 
   // Looks across all rows first: links WooCommerce variations to their parent, fills shared product info
   // down into variant rows, spots photo-only rows
@@ -185,6 +188,7 @@ async function cleanStage(ctx: AttemptContext, imp: Import) {
       defaultCurrency: imp.defaultCurrency,
       hints: info.hints,
       decimalSeparator,
+      weightUnit,
     });
     return {
       id: row.id,
