@@ -22,6 +22,9 @@ const envSchema = z.object({
   AI_REQUESTS_PER_MINUTE: z.coerce.number().min(1).max(10_000).default(60),
   // How many AI batches one worker runs at the same time
   AI_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(2),
+  // How many translation batches it runs at the same time, next to those. Translating is most of the AI work (two
+  // languages for every product), so it can use more. Unset: the same as AI_CONCURRENCY
+  AI_TRANSLATE_CONCURRENCY: z.coerce.number().int().min(1).max(40).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

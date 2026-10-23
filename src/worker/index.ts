@@ -103,11 +103,11 @@ async function main() {
     await failProducts(db, job.data, "The AI couldn't write this product after several tries");
   });
 
-  // Same as the AI batches: AI_CONCURRENCY at a time, a pause (rate limit, no credit) puts the batch back in the
-  // queue without using up a try
+  // Same as the AI batches: AI_TRANSLATE_CONCURRENCY at a time (AI_CONCURRENCY when unset), a pause (rate limit, no
+  // credit) puts the batch back in the queue without using up a try
   await boss.work<TranslateBatchJob>(
     queues.translateBatch.name,
-    { batchSize: env().AI_CONCURRENCY, perJobResults: true, burstWhenBatchFull: true, pollingIntervalSeconds: 1 },
+    { batchSize: env().AI_TRANSLATE_CONCURRENCY ?? env().AI_CONCURRENCY, perJobResults: true, burstWhenBatchFull: true, pollingIntervalSeconds: 1 },
     async (jobs) => {
       const settled = await Promise.allSettled(
         jobs.map(async (job) => {
