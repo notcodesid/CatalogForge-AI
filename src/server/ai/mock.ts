@@ -12,7 +12,8 @@ import type { Category } from "./taxonomy";
 // MOCK_AI_MODE makes it misbehave on purpose, to prove our checks catch it (comma separated):
 //   invent      add claims the supplier never made, and turn "not frost-proof" into "frost-proof"
 //   fail:N      the first N calls fail like an overloaded provider
-//   ratelimit   the first call is refused with "too many requests"
+//   ratelimit   the first call is refused with "too many requests", to try again in 2 s. ratelimit:N waits N seconds
+//               instead (over 90 s, the import shows "Paused" on screen)
 //   nocredit:N  the first N calls are refused because the account is out of credit
 //   truncate    the first call is cut off mid-answer
 //   badjson     the first call returns broken JSON
@@ -202,9 +203,10 @@ export const mockProvider: AiProvider = {
       state.noCredit++;
       throw new AiOutOfCreditError("Mock AI: the account is out of credit (402)");
     }
-    if (active.includes("ratelimit") && !state.rateLimited) {
+    const rateLimit = active.find((m) => m === "ratelimit" || m.startsWith("ratelimit:"));
+    if (rateLimit && !state.rateLimited) {
       state.rateLimited = true;
-      throw new AiRateLimitError("Mock AI: too many requests (429)", 2_000);
+      throw new AiRateLimitError("Mock AI: too many requests (429)", Number(rateLimit.split(":")[1] ?? 2) * 1000);
     }
 
     const products =
