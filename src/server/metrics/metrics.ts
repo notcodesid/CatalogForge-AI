@@ -3,12 +3,13 @@ import type { Db } from "@/server/db/client";
 import { aiCalls, importRows, imports, products } from "@/server/db/schema";
 import { env } from "@/server/env";
 import { translationCoverage } from "@/server/translations/coverage";
+import { countReasonKinds } from "./review-reasons";
 import { batchingSavingMicroUsd, cacheSavingMicroUsd, type CallSums, routingSavingMicroUsd } from "./savings";
 import { bucketStart, bucketsBetween, type MetricsWindow } from "./window";
 
 // The numbers behind the Metrics tab, for one period: what was processed, how it went, what the AI cost and how
-// fast it was, how much our design saved, and how far the catalog is translated. A handful of grouped queries:
-// AI calls are summed per hour, model, kind and outcome in the database, never fetched one by one
+// fast it was, how much our design saved, why products need review, and how far the catalog is translated. A handful
+// of grouped queries: AI calls are summed per hour, model, kind and outcome in the database, never fetched one by one
 
 type CallGroup = {
   // Start of the hour, in milliseconds since 1970 (raw SQL gives timestamps back as text)
@@ -43,9 +44,13 @@ type ImportRow = {
   cost: number;
 };
 
+// Products in review that have the very same reasons, with one of them
+type ReviewGroup = { products: number; product_id: string; reasons: string | null };
+
 const IMPORT_STATUSES = ["waiting_for_files", "queued", "running", "paused", "done", "failed"] as const;
 const RECENT_IMPORTS = 20;
 const TOP_IMPORTS = 5;
+const TOP_REASONS = 10;
 
 const usd = (microUsd: number) => Math.round(microUsd) / 1_000_000;
 const percent = (part: number, whole: number) => (whole ? Math.round((part / whole) * 1000) / 10 : 0);
@@ -60,7 +65,7 @@ function modelsOf(provider: string) {
 
 export async function getMetrics(db: Db, window: MetricsWindow) {
   const { from, to } = window;
-  const [callGroups, importList, catalog, translations] = await Promise.all([
+  const [callGroups, importList, catalog, reviewGroups, translations] = await Promise.all([
     db
       .execute<CallGroup>(sql`
         select (extract(epoch from date_trunc('hour', ${aiCalls.createdAt})) * 1000)::float8 as hour_ms, ${aiCalls.provider} as provider, ${aiCalls.model} as model,
@@ -107,6 +112,19 @@ export async function getMetrics(db: Db, window: MetricsWindow) {
         from ${products} group by status
       `)
       .then((r) => r.rows),
+    // Why the products in review are there, as it is now (not for the period, like the catalog above). Products with
+    // the very same reasons come back as one row with their count, so each list of reasons is sorted into kinds once,
+    // in code (see review-reasons.ts). Measured: 50,000 products in review take about 40 ms. Biggest first, for the
+    // examples
+    db
+      .execute<ReviewGroup>(sql`
+        select count(*)::int as products, min(id::text) as product_id, review_reason as reasons
+        from ${products}
+        where status = 'needs_review' and deleted_at is null
+        group by review_reason
+        order by 1 desc
+      `)
+      .then((r) => r.rows),
     translationCoverage(db),
   ]);
 
@@ -116,6 +134,7 @@ export async function getMetrics(db: Db, window: MetricsWindow) {
     imports: importNumbers(importList),
     ai: aiNumbers(callGroups, importList, window),
     savings: await savings(db, callGroups),
+    reviewReasons: reviewNumbers(reviewGroups),
     translations: { ...translations, outOfDate: sum(translations.languages, (l) => l.outOfDate) },
   };
 }
@@ -256,6 +275,20 @@ function aiNumbers(groups: CallGroup[], importList: ImportRow[], window: Metrics
     // Calls that went wrong. Rate limits and timeouts are tried again; invalid answers are asked again
     problems: { rateLimited: failed("rate_limited"), timeout: failed("timeout"), invalidOutput: failed("invalid_output"), error: failed("error") },
     overTime: [...buckets.values()].map(({ costMicroUsd, ...b }) => ({ ...b, costUsd: usd(costMicroUsd) })),
+  };
+}
+
+// The most common kinds of reason among the products waiting for review, each with how many products it holds back,
+// their share of all products in review, and one real reason of that kind
+function reviewNumbers(groups: ReviewGroup[]) {
+  const total = sum(groups, (g) => g.products);
+  const kinds = countReasonKinds(groups.map((g) => ({ reasons: g.reasons, products: g.products, productId: g.product_id })));
+  return {
+    total,
+    // In review with nothing flagged any more (the merchant fixed it): they only need approving
+    withoutReason: sum(groups.filter((g) => !g.reasons), (g) => g.products),
+    kinds: kinds.length,
+    top: kinds.slice(0, TOP_REASONS).map((k) => ({ ...k, share: percent(k.products, total) })),
   };
 }
 

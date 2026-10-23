@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AiSection, CatalogSection, ImportsSection, KeyNumbers, TranslationsSection } from "./sections";
+import { AiSection, CatalogSection, ImportsSection, KeyNumbers, ReviewReasonsSection, TranslationsSection } from "./sections";
 import type { Metrics } from "./types";
 
 // The sections rendered to HTML with real-shaped data (no browser here): nothing crashes, the numbers and their
@@ -48,6 +48,15 @@ const busy: Metrics = {
     routing: { usd: 0.021152, calls: 28, note: "Cheap-model calls priced at the strong model." },
     batching: { usd: 0.002768, extraInstructionTokens: 40486, note: "Instructions sent once per batch." },
   },
+  reviewReasons: {
+    total: 9,
+    withoutReason: 1,
+    kinds: 12,
+    top: [
+      { key: "weight-no-unit", label: "Weight has no unit", products: 5, share: 55.6, example: { reason: 'Row 12: Weight "2,8" has no unit (kg, g or lbs?)', productId: "prod-1" } },
+      { key: "ai-doubt", label: "The AI's own doubt", products: 3, share: 33.3, example: { reason: "The size may be a diameter or a height", productId: "prod-2" } },
+    ],
+  },
   translations: {
     products: 37,
     languages: [
@@ -79,6 +88,7 @@ const quiet: Metrics = {
     problems: { rateLimited: 0, timeout: 0, invalidOutput: 0, error: 0 },
     overTime: busy.ai.overTime.map((b) => ({ ...b, calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 })),
   },
+  reviewReasons: { total: 0, withoutReason: 0, kinds: 0, top: [] },
   savings: { ...busy.savings, totalUsd: 0, cache: { ...busy.savings.cache, usd: 0, calls: 0 }, routing: { ...busy.savings.routing, usd: 0, calls: 0 }, batching: { ...busy.savings.batching, usd: 0, extraInstructionTokens: 0 } },
   translations: {
     products: 0,
@@ -96,12 +106,14 @@ function render(metrics: Metrics) {
     renderToStaticMarkup(createElement(AiSection, { metrics, days: 7 })),
     renderToStaticMarkup(createElement(ImportsSection, { metrics, days: 7 })),
     renderToStaticMarkup(createElement(CatalogSection, { metrics })),
+    renderToStaticMarkup(createElement(ReviewReasonsSection, { metrics })),
     renderToStaticMarkup(createElement(TranslationsSection, { metrics })),
   ].join("\n");
   // Text as a reader sees it: tags out, entities back
   return html
     .replace(/<[^>]+>/g, " ")
     .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&quot;/g, '"')
     .replace(/&amp;/g, "&")
     .replace(/\s+/g, " ");
 }
@@ -131,6 +143,11 @@ describe("the Metrics tab's sections", () => {
       "German Shown to shoppers 97.3%",
       "French Switched off 81.1%",
       "1 out of date",
+      "9 products waiting for review, for 12 kinds of reason. Review them",
+      "Weight has no unit 5 55.6% of the products in review",
+      'For example: “Row 12: Weight "2,8" has no unit (kg, g or lbs?)” See the product',
+      "The AI's own doubt 3 33.3%",
+      "ready to approve: 1 product",
     ]) {
       expect(text).toContain(expected);
     }
@@ -138,10 +155,17 @@ describe("the Metrics tab's sections", () => {
 
   it("reads cleanly when nothing happened in the period", () => {
     const text = render(quiet);
-    for (const expected of ["Products processed 0", "AI cost $0", "Cost per 1,000 products –", "No products were written in this period", "No AI calls in the last 7 days", "No imports in the last 7 days", "No products yet", "No products to translate yet"]) {
+    for (const expected of ["Products processed 0", "AI cost $0", "Cost per 1,000 products –", "No products were written in this period", "No AI calls in the last 7 days", "No imports in the last 7 days", "No products yet", "Nothing waiting for review", "No products to translate yet"]) {
       expect(text).toContain(expected);
     }
     expect(text).not.toContain("NaN");
     expect(text).not.toContain("Infinity");
+  });
+
+  it("says when the products in review have nothing flagged any more", () => {
+    const text = render({ ...busy, reviewReasons: { total: 2, withoutReason: 2, kinds: 0, top: [] } });
+    expect(text).toContain("2 products waiting for review. Review them");
+    expect(text).toContain("Nothing flagged on them any more: they only need approving");
+    expect(text).not.toContain("ready to approve:");
   });
 });

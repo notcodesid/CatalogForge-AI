@@ -7,7 +7,8 @@ import { metricsWindow, windowQuery } from "@/server/metrics/window";
 // GET /api/metrics?days=7  or  ?from=2026-10-01&to=2026-10-22
 // The Metrics tab: products processed and how they ended, imports and their speed, AI calls, tokens and cost
 // (per model, per kind, per import, over time), call speed, problems, the money routing, batching and saved
-// answers saved (estimates, explained in each "note"), and translation coverage per language
+// answers saved (estimates, explained in each "note"), the most common reasons products wait for review (now,
+// whatever the period), and translation coverage per language
 export async function GET(request: Request) {
   await connection();
   const query = windowQuery.safeParse(Object.fromEntries(new URL(request.url).searchParams));

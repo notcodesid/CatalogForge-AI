@@ -51,6 +51,18 @@ export type TranslationLanguage = {
 
 export type Saving = { usd: number; note: string };
 
+// One kind of reason products wait for review, e.g. every 'Row 12: Weight "2,8" has no unit (kg, g or lbs?)'
+export type ReviewReason = {
+  key: string;
+  // "Weight has no unit", "AI unsure: category", "The AI's own doubt"
+  label: string;
+  products: number;
+  // Percent of all products in review
+  share: number;
+  // One real reason of this kind, as one product has it
+  example: { reason: string; productId: string };
+};
+
 export type Metrics = {
   window: { from: string; to: string; bucket: Bucket };
   products: {
@@ -80,5 +92,7 @@ export type Metrics = {
     routing: Saving & { calls: number };
     batching: Saving & { extraInstructionTokens: number };
   };
+  // The products waiting for review now (not for the period): how many, and the most common kinds of reason
+  reviewReasons: { total: number; withoutReason: number; kinds: number; top: ReviewReason[] };
   translations: { products: number; languages: TranslationLanguage[]; outOfDate: number };
 };

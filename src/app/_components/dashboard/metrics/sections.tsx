@@ -361,6 +361,70 @@ export function CatalogSection({ metrics }: { metrics: Metrics }) {
   );
 }
 
+const products = (count: number) => `${formatCount(count)} product${count === 1 ? "" : "s"}`;
+
+// What holds back the products waiting for review, the most common kinds of reason first, each with one real reason
+// so the merchant sees what it means
+export function ReviewReasonsSection({ metrics }: { metrics: Metrics }) {
+  const review = metrics.reviewReasons;
+  return (
+    <section aria-labelledby="review-heading" className="space-y-4">
+      <SectionHeading id="review-heading" title="Why products need review">
+        The products waiting for you now, from every import: the period above doesn&apos;t change this. Reasons that only differ by row, value or SKU count as one kind, and a product counts once for each kind it has.
+      </SectionHeading>
+      {review.total === 0 ? (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <ChartEmpty>Nothing waiting for review</ChartEmpty>
+        </div>
+      ) : (
+        <ChartFrame
+          title="Most common reasons"
+          description={
+            <>
+              {products(review.total)} waiting for review{review.kinds > 0 && `, for ${formatCount(review.kinds)} kind${review.kinds === 1 ? "" : "s"} of reason`}.{" "}
+              <Link href="/products?status=needs_review" className={linkClasses}>
+                Review them
+              </Link>
+            </>
+          }
+          table={
+            review.top.length > 0 && (
+              <DataTable head={["Reason", "Products", "Share of review"]} rows={review.top.map((r) => [r.label, formatCount(r.products), formatPercent(r.share)])} />
+            )
+          }
+        >
+          {review.top.length ? (
+            <BarList
+              bars={review.top.map((r) => ({
+                key: r.key,
+                label: r.label,
+                value: r.products,
+                display: formatCount(r.products),
+                details: (
+                  <>
+                    <span className="block">{formatPercent(r.share)} of the products in review</span>
+                    <span className="mt-0.5 block break-words">
+                      For example: “{r.example.reason}”{" "}
+                      <Link href={`/products/${r.example.productId}`} className={linkClasses}>
+                        See the product
+                      </Link>
+                    </span>
+                  </>
+                ),
+              }))}
+            />
+          ) : (
+            <ChartEmpty>Nothing flagged on them any more: they only need approving</ChartEmpty>
+          )}
+          {review.top.length > 0 && review.withoutReason > 0 && (
+            <p className="text-xs text-muted-foreground">Also waiting, with nothing flagged any more and ready to approve: {products(review.withoutReason)}</p>
+          )}
+        </ChartFrame>
+      )}
+    </section>
+  );
+}
+
 export function TranslationsSection({ metrics }: { metrics: Metrics }) {
   const { translations } = metrics;
   return (

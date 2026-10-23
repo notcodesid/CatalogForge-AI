@@ -29,6 +29,7 @@ const c10 = costMicroUsd("deepseek-v4-pro", u10, longAgo);
 
 let a = "";
 let b = "";
+let productIds: Record<string, string> = {};
 
 beforeAll(async () => {
   await db.execute(sql`truncate imports, products, ai_calls, ai_cache, ai_status restart identity cascade`);
@@ -62,16 +63,26 @@ beforeAll(async () => {
   ]);
 
   const product = (key: string, status: "ready" | "needs_review" | "approved", extra: object = {}) => ({ productKey: key, handle: key, title: key, status, ...extra });
-  const [first] = await db
+  const weightAndPrice = 'Row 4: Weight "2,8" has no unit (kg, g or lbs?); Row 4: No price';
+  const inserted = await db
     .insert(products)
     .values([
       product("k1", "ready", { englishHashes: { title: "new" } }),
-      product("k2", "needs_review"),
+      product("k2", "needs_review", { reviewReason: weightAndPrice }),
       product("p1", "ready"),
       product("p2", "approved"),
       product("gone", "ready", { deletedAt: new Date() }),
+      // The same reasons as k2: counted together
+      product("p6", "needs_review", { reviewReason: weightAndPrice }),
+      // A weight without a unit on two rows: one product with that kind of reason
+      product("p5", "needs_review", { reviewReason: 'Row 6: Weight "1.2" has no unit (kg, g or lbs?); Row 7: Weight "1.3" has no unit (kg, g or lbs?); The AI isn\'t sure about: category (60%)' }),
+      // Nothing flagged any more, still in review
+      product("k9", "needs_review"),
+      product("gone2", "needs_review", { reviewReason: "Row 9: No price", deletedAt: new Date() }),
     ])
-    .returning({ id: products.id });
+    .returning({ id: products.id, key: products.productKey });
+  productIds = Object.fromEntries(inserted.map((p) => [p.key, p.id]));
+  const [first] = inserted;
   // The merchant's German title, written before the English changed: out of date
   await db.insert(translations).values({ productId: first.id, locale: "de", field: "title", value: "Titel", sourceHash: "old", writtenBy: "merchant" });
 
@@ -116,8 +127,8 @@ describe("getMetrics", () => {
     expect(m.window).toEqual({ from: "2026-10-17T00:00:00.000Z", to: "2026-10-25T00:00:00.000Z", bucket: "day" });
     expect(m.products).toEqual({
       processed: 7,
-      catalog: { total: 4, ready: 2, needsReview: 1, approved: 1, deleted: 1 },
-      rates: { ready: 50, needsReview: 25, approved: 25 },
+      catalog: { total: 7, ready: 2, needsReview: 4, approved: 1, deleted: 2 },
+      rates: { ready: 28.6, needsReview: 57.1, approved: 14.3 },
     });
     expect(m.rows).toEqual({ total: 10, done: 6, needsReview: 3, failed: 1, pending: 0, rates: { done: 60, needsReview: 30, failed: 10 } });
   });
@@ -177,8 +188,23 @@ describe("getMetrics", () => {
 
   it("reports translation coverage per language and the merchant's out-of-date translations", async () => {
     const { translations: t } = await metrics();
-    expect(t.products).toBe(4);
+    expect(t.products).toBe(7);
     expect(t.outOfDate).toBe(1);
     expect(t.languages.find((l) => l.locale === "de")).toMatchObject({ enabled: true, merchantFixes: 1, outOfDate: 1 });
+  });
+
+  it("counts why the products in review are there, a product once per kind, with one real reason each", async () => {
+    const { reviewReasons } = await metrics();
+    const firstOfK2AndP6 = [productIds.k2, productIds.p6].sort()[0];
+    expect(reviewReasons).toEqual({
+      total: 4,
+      withoutReason: 1,
+      kinds: 3,
+      top: [
+        { key: "weight-no-unit", label: "Weight has no unit", products: 3, share: 75, example: { reason: 'Row 4: Weight "2,8" has no unit (kg, g or lbs?)', productId: firstOfK2AndP6 } },
+        { key: "no-price", label: "No price", products: 2, share: 50, example: { reason: "Row 4: No price", productId: firstOfK2AndP6 } },
+        { key: "ai-unsure:category", label: "AI unsure: category", products: 1, share: 25, example: { reason: "The AI isn't sure about: category (60%)", productId: productIds.p5 } },
+      ],
+    });
   });
 });

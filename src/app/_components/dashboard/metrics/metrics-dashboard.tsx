@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { ApiError, getJson } from "../api";
 import { buttonClasses, EmptyState, ErrorState, focusClasses, linkClasses, Skeleton } from "../ui";
 import { type PeriodDays, periodFromParam, periodPhrase, PERIODS } from "./helpers";
-import { AiSection, CatalogSection, ImportsSection, KeyNumbers, TranslationsSection } from "./sections";
+import { AiSection, CatalogSection, ImportsSection, KeyNumbers, ReviewReasonsSection, TranslationsSection } from "./sections";
 import type { Metrics } from "./types";
 
 // Fresh numbers every 30 seconds while the tab is open; none while it's in the background
@@ -109,6 +109,7 @@ export function MetricsDashboard() {
           <AiSection metrics={state.metrics} days={state.days} />
           <ImportsSection metrics={state.metrics} days={state.days} />
           <CatalogSection metrics={state.metrics} />
+          <ReviewReasonsSection metrics={state.metrics} />
           <TranslationsSection metrics={state.metrics} />
         </div>
       )}

@@ -198,7 +198,7 @@ export function ColumnChart({ columns, format, label }: { columns: Column[]; for
   );
 }
 
-export type Bar = { key: string; label: string; value: number; display: string; details?: string };
+export type Bar = { key: string; label: string; value: number; display: string; details?: ReactNode };
 
 // Horizontal bars for one measure (cost per model, per kind of work). Every value is written next to its bar,
 // so nothing is hidden behind a hover
