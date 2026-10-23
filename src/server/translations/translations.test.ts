@@ -200,6 +200,7 @@ describe("translations", () => {
     const planter = await productByTitle("Hand-thrown Terracotta Planter");
     const french = (await productTranslations(db, planter.id)).languages.find((l) => l.locale === "fr")!;
     expect(french.fields.description_html.issue).toBe("It's still in English");
+    expect(french.fields.title.issue).toBe("It's still in English");
   });
 
   it("translates only the languages switched on, and fills in a language when it's switched on", async () => {

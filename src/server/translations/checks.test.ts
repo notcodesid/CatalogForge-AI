@@ -62,6 +62,11 @@ describe("checkField", () => {
     expect(check("description_html", { description_html: english.description_html })).toContain("it's still in English");
     const oneCopied = goodGerman.description_html.replace("Handgedrehter Terrakotta-Übertopf mit Abflussloch, 20 cm Durchmesser.", "Hand-thrown terracotta planter with a drainage hole, 20 cm across.");
     expect(check("description_html", { description_html: oneCopied })).toEqual(["a sentence was left in English"]);
+    // A title too, unless it's one word that's the same in both languages
+    const vase: EnglishFields = { title: "Audit Bud Vase" };
+    expect(checkField("title", vase, { title: "Audit Bud Vase" })).toEqual(["it's still in English"]);
+    expect(checkField("title", vase, { title: "Vase soliflore Audit" })).toEqual([]);
+    expect(checkField("title", { title: "Vase" }, { title: "Vase" })).toEqual([]);
   });
 
   it("wants every attribute and option value", () => {

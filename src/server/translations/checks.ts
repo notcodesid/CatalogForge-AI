@@ -96,7 +96,12 @@ export function checkField(field: TranslatedField, english: EnglishFields, trans
       const title = translated.title?.trim() ?? "";
       if (!title) return ["the title is empty"];
       if (title.length > 120) return ["the title is too long"];
-      return [...textProblems(english.title ?? "", title), ...claimProblem(allEnglish, title)];
+      const problems = [...textProblems(english.title ?? "", title), ...claimProblem(allEnglish, title)];
+      // A title of one word may be the same in both languages ("Vase"). A longer one isn't: "Audit Bud Vase" came
+      // back as the French title. If it's only a brand name, the merchant can save it as their own translation
+      const englishTitle = english.title?.trim() ?? "";
+      if (normalizeForMatch(title) === normalizeForMatch(englishTitle) && /\s/.test(englishTitle)) problems.push("it's still in English");
+      return problems;
     }
     case "description_html": {
       const englishHtml = english.description_html ?? "";
