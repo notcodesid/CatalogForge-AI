@@ -22,7 +22,8 @@ async function main() {
   await db.execute(sql`truncate imports, import_rows, photos, products, variants, translations, translation_state, ai_calls, ai_cache, ai_status`);
   // Jobs left in the queue would point at imports that are gone. The queue's tables only exist once the worker ran
   await db.execute(sql`do $$ begin if to_regclass('pgboss.job') is not null then delete from pgboss.job; end if; end $$`);
-  await rm(path.resolve(env().STORAGE_DIR, "imports"), { recursive: true, force: true });
+  // The uploaded files, and the resized photos (stored by content, so no longer used by any product)
+  for (const folder of ["imports", "photos"]) await rm(path.resolve(env().STORAGE_DIR, folder), { recursive: true, force: true });
   console.log("Done: the app is empty. Language settings were kept.");
   await db.$client.end();
 }
