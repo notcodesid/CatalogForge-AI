@@ -2,12 +2,20 @@
 
 [Back to the README](../README.md)
 
-(Draft.)
+**What was the hardest part?**
 
-**What was the hardest part?** *(to write in your own words)* Candidates: making the AI's output trustworthy
-(sentences it invents that no claim list catches, and claims whose strength changes across languages:
-"frost-resistant" vs "frost-proof", "frostbeständig" vs "frostfest"), and making a crash at any moment safe
-(attempt numbers, jobs queued in the same transaction as the work they stand for).
+Making the AI's output safe to publish. Claude writes good listings, but now and then it adds something the
+supplier never said: "handmade", "frost-proof" when the sheet says "not frost-proof", "organic" from "organic
+cotton blend". Telling it not to in the prompt helped, but didn't stop it. So code now checks every claim against
+the supplier's own words, in English, German and French, including the "not" in front of a claim and words like
+"blend" that make it partial. The other half was false alarms: the first checks sent too much to review (64% of
+the rows of the 10,000-row sheet). Tuning them on real sheets brought that down to 29%, and most of what's left are
+problems planted in the test data on purpose.
+
+The second hardest was making a crash at any moment safe. Every job is queued in the same database transaction as
+the work it stands for, every step can run twice without harm, and a worker that dies mid-job is noticed by its
+missing heartbeats. Killing the worker with `kill -9` in the middle of a 5,000-row import lost nothing and created no
+duplicates.
 
 **How did you make extraction accurate, and how did you stop invented claims?** See [Accuracy](accuracy.md).
 
@@ -59,10 +67,35 @@
 3. **Counting queries.** 40 million translation rows (1M products x 8 languages x 5 fields): coverage and "is the
    import done" queries that count rows get slow. Fix: per-import and per-language counters updated with the rows,
    or summary tables refreshed in the background.
-4. **Storage and search.** Deployed, photos are already in object storage (R2), but every photo is still served
-   through the web app; a CDN in front of the bucket should serve them instead. The product list needs keyset
-   pagination and a search index (pg_trgm or full-text) instead of OFFSET and ILIKE.
+4. **Storage and search.** Photos belong in object storage: that's built (`S3_BUCKET`, for R2 or S3), while the
+   free demo keeps them in the database. Every photo is still served through the web app; a CDN in front of the
+   bucket should serve them instead. The product list needs keyset pagination and a search index (pg_trgm or
+   full-text) instead of OFFSET and ILIKE.
 
-**What did you learn?** *(to write in your own words)*
+**What did you learn?**
 
-**How did you use AI while building this?** *(to write in your own words)*
+- **Let code do the facts and the AI do the words.** Prices, units, sizes and grouping are plain code with tests.
+  The AI only writes text, and anything it says is checked. Every bug that came from the AI guessing a fact went
+  away once the fact came from code instead.
+- **Check the AI in code, not only in the prompt.** Prompt rules lower the mistakes; checks in code catch the rest.
+  Checks also need real data to tune, or they flag too much.
+- **Put the job queue in the database.** With jobs saved in the same transaction as the work, crash safety is
+  simple to reason about: there's no moment where work is recorded but not queued.
+- **Measure with the real AI.** With the instant mock AI, 10,000 rows took 33 seconds. With Claude it took 20
+  minutes, limited by Claude's output-token limit, not by our code. More workers don't help there; a higher limit or
+  the Batch API does.
+- **Keep the edges small.** Storage and the worker sit behind small interfaces, so moving to free hosting (files in
+  the database, the worker in short bursts on Vercel) took a few hours instead of a rewrite.
+
+**How did you use AI while building this?**
+
+- **Claude Code wrote most of the code, tests and docs.** I set the plan and the big decisions (Postgres as the
+  queue, code for facts and AI for text, the hosting) and reviewed the results. I started with DeepSeek as the
+  product's AI and switched to Claude, which only meant adding one provider behind the same interface.
+- **I tested it as a merchant.** I uploaded real messy sheets and photos and checked what came out. A separate AI
+  agent tested the app in the browser against the brief and reported what was broken. Each report went back to
+  Claude Code as a fix with a test.
+- **Real runs, not just the mock.** Every number in this write-up comes from real Claude runs, including the
+  crash test.
+- **Claude inside the product** writes the listings and translations: Haiku for clean products, Sonnet for messy
+  ones, with code checking every answer.
