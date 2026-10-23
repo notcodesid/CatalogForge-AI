@@ -4,7 +4,7 @@
 # The Anthropic API key is read from .env.local the first time and kept in Secrets Manager; it's never printed
 set -euo pipefail
 
-REGION=${AWS_REGION:-eu-central-1}
+REGION=${AWS_REGION:-ap-southeast-2}
 STACK=${STACK_NAME:-catalogforge}
 REPO=${ECR_REPOSITORY:-catalogforge}
 export AWS_REGION=$REGION
@@ -20,9 +20,19 @@ echo "== Image $IMAGE"
 aws ecr describe-repositories --repository-names "$REPO" >/dev/null 2>&1 ||
   aws ecr create-repository --repository-name "$REPO" --image-tag-mutability IMMUTABLE \
     --image-scanning-configuration scanOnPush=true >/dev/null
-aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
-docker build --platform linux/arm64 -t "$IMAGE" .
-docker push "$IMAGE"
+# Already pushed (a run that stopped later on): tags can't be overwritten, so don't build or push it again
+if aws ecr describe-images --repository-name "$REPO" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+  echo "Already in ECR"
+else
+  aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
+  docker build --platform linux/arm64 -t "$IMAGE" .
+  # A large layer can lose its connection on a slow upload; layers already sent are skipped on the next try
+  for attempt in 1 2 3; do
+    docker push "$IMAGE" && break
+    [ "$attempt" = 3 ] && exit 1
+    echo "Push failed, trying again"
+  done
+fi
 
 echo "== Anthropic API key in Secrets Manager"
 SECRET_NAME="$STACK/anthropic-api-key"

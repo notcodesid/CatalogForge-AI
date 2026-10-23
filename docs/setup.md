@@ -76,9 +76,15 @@ At 10 and 16 we hit the limit a few times, and the app paused and carried on by 
 | `pnpm test` | Run tests against a separate test database |
 | `pnpm typecheck` / `pnpm lint` | Type check / lint |
 
+## Deploying to AWS
+
+The scalable setup runs on AWS: the web app and the workers as containers (ECS Fargate), a private RDS Postgres, S3
+for files, CloudFront for HTTPS, and workers that scale on the queue backlog. One command builds and deploys it:
+`AWS_PROFILE=<profile> infra/aws/deploy.sh`. Details and measured results: [infra/aws/README.md](../infra/aws/README.md).
+
 ## Live deployment
 
-The live demo runs on free plans, with no card needed:
+A second copy runs on free plans, with no card needed:
 
 | Part | Where |
 |---|---|
@@ -109,7 +115,8 @@ laptop against the direct URL: `DATABASE_URL=<direct url> pnpm db:migrate`.
 
 ### Scaling past the free setup
 
-The free setup is for the demo. What limits it, and what replaces it for real use:
+The free setup is for the demo. What limits it, and what replaces it for real use (the AWS setup above does all of
+it except the signed uploads, which it doesn't need: it has no 4 MB limit):
 
 | Free setup | Its limit | For real scale |
 |---|---|---|

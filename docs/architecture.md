@@ -106,7 +106,8 @@ src/
     storage/        where uploaded files are saved: a local folder, or an S3-compatible bucket (Cloudflare R2)
   worker/           the background worker
   test/             test setup (separate database, queue)
-scripts/            terminal scripts for testing
+scripts/            terminal scripts: import a file, reset the data, migrations for deployments (migrate.ts)
+infra/aws/          the AWS setup (CloudFormation) and its deploy script; Dockerfile at the root
 samples/            test sheets: messy supplier sheets, Shopify and WooCommerce exports, German and French files,
                     a messy Excel layout, broken files, a 5,000-row sheet, and photos (samples/test-files)
 drizzle/            SQL migrations

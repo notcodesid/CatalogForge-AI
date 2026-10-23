@@ -3,6 +3,9 @@
 Turns a messy supplier spreadsheet and product photos into a clean product catalog in English, German and French,
 with a review screen for the merchant, a storefront and exports.
 
+**Live:** https://d1bmdg6rm9fedd.cloudfront.net on AWS, with workers that scale on their own
+([how](infra/aws/README.md)). A copy on free plans: https://catalogforge-sandy.vercel.app
+
 (Screenshots of the upload, review, metrics and shop pages go here.)
 
 ## What it does
@@ -41,6 +44,7 @@ All the settings and scripts are in [Setup](docs/setup.md).
 | Worker killed with `kill -9` at 32% of a 5,000-row import | Picked up again within about 30 s: 0 duplicates, nothing lost |
 | Storefront during the 10,000-row import | 99% of requests under 308 ms (shop page) and 505 ms (product page), 0 errors |
 | A 10,001-row sheet | Refused in about 1 s, before any AI call |
+| Auto scaling on AWS | A 1,000-row import filled the queue; workers went from 1 to 3 on their own and finished it in 3 min 23 s, 0 failed |
 
 How these were measured, and what breaks first at 1,000,000 products: [Technical write-up](docs/write-up.md).
 
@@ -71,5 +75,6 @@ How these were measured, and what breaks first at 1,000,000 products: [Technical
 | [Accuracy](docs/accuracy.md) | How invented claims are stopped, and why products go to review |
 | [Tech stack and design decisions](docs/tech-stack.md) | What we picked and what each choice costs |
 | [API](docs/api.md) | Every API route |
+| [AWS deployment](infra/aws/README.md) | The AWS setup: containers, private database, S3, CloudFront, worker auto scaling, and the one-command deploy |
 | [Technical write-up](docs/write-up.md) | Measured numbers, and what breaks first at 1,000,000 products in 8 languages |
 | [EDGE-CASES.md](EDGE-CASES.md) | Everything that can go wrong, and how the app handles it |

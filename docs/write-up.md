@@ -67,8 +67,8 @@ duplicates.
 3. **Counting queries.** 40 million translation rows (1M products x 8 languages x 5 fields): coverage and "is the
    import done" queries that count rows get slow. Fix: per-import and per-language counters updated with the rows,
    or summary tables refreshed in the background.
-4. **Storage and search.** Photos belong in object storage: that's built (`S3_BUCKET`, for R2 or S3), while the
-   free demo keeps them in the database. Every photo is still served through the web app; a CDN in front of the
+4. **Storage and search.** Photos belong in object storage: on AWS they're in S3 (`S3_BUCKET`), while the free
+   Vercel copy keeps them in the database. Every photo is still served through the web app; a CDN in front of the
    bucket should serve them instead. The product list needs keyset pagination and a search index (pg_trgm or
    full-text) instead of OFFSET and ILIKE.
 
