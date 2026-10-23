@@ -25,6 +25,15 @@ export function seoFields(title: string, descriptionHtml: string) {
   return { metaTitle: cut(title, 60), metaDescription: cut(text || title, 155) };
 }
 
+// Sizes keep their numbers through translation ("10.2 cm"), but German and French write decimals with a comma:
+// "10,2 cm". Each AI answer did it its own way ("30,5 cm" on one product, "10.2 cm" on the next), so it's done here.
+// Only values made of numbers and units are changed, never a name like "Model 2.5"
+const MEASUREMENT = /^(?:Ø\s*)?\d+(?:[.,]\d+)?(?:\s*[×x]\s*\d+(?:[.,]\d+)?)*\s*(?:mm|cm|m|ml|cl|l|L|kg|g)?$/;
+
+function localDecimals(value: string, locale: Locale | "en"): string {
+  return locale !== "en" && MEASUREMENT.test(value) ? value.replace(/(\d)\.(\d)/g, "$1,$2") : value;
+}
+
 export function localizeProduct(product: ProductText, variants: { options: Record<string, string> }[], rows: TranslationRow[], locale: Locale | "en") {
   const english = englishFields(product, variants);
   const hashes = fieldHashes(english);
@@ -70,7 +79,7 @@ export function localizeProduct(product: ProductText, variants: { options: Recor
     options: Object.entries(english.options ?? {}).map(([name, values]) => ({
       name,
       label: optionTranslations?.[name]?.label ?? englishLabel(name),
-      values: Object.fromEntries(values.map((v) => [v, optionTranslations?.[name]?.values?.[v] ?? v])),
+      values: Object.fromEntries(values.map((v) => [v, localDecimals(optionTranslations?.[name]?.values?.[v] ?? v, locale)])),
     })),
     seo: seoFields(title, descriptionHtml),
     // Where each field came from, and the merchant's translations whose English changed since

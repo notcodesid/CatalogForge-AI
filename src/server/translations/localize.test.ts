@@ -53,6 +53,15 @@ describe("localizeProduct", () => {
     expect(shown.outOfDate).toEqual(["title"]);
   });
 
+  it("writes decimals in sizes the way German and French do, whatever the AI wrote", () => {
+    // Seen in a real run: "30,5 cm" on one product and "10.2 cm" on the next
+    const bowl = [{ options: { size: "10.2 cm" } }, { options: { size: "Ø 15.5 cm" } }, { options: { size: "Model 2.5" } }];
+    const sizes = (locale: "de" | "fr" | "en") => localizeProduct(product, bowl, [], locale).options[0].values;
+    expect(sizes("de")).toEqual({ "10.2 cm": "10,2 cm", "Ø 15.5 cm": "Ø 15,5 cm", "Model 2.5": "Model 2.5" });
+    expect(sizes("fr")["10.2 cm"]).toBe("10,2 cm");
+    expect(sizes("en")["10.2 cm"]).toBe("10.2 cm");
+  });
+
   it("shows English to everyone else", () => {
     const shown = localizeProduct(product, variants, [row("title", "Steingutbecher")], "en");
     expect(shown.title).toBe("Stoneware Mug");
