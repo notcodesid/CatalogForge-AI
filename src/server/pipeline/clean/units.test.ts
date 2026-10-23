@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSize, parseWeight } from "./units";
+import { detectWeightUnit, parseSize, parseWeight, weightUnitFor } from "./units";
 
 describe("parseWeight", () => {
   it.each([
@@ -70,5 +70,22 @@ describe("parseSize", () => {
 
   it("flags a bare number with no unit", () => {
     expect(parseSize("20")).toMatchObject({ problem: 'Size "20" has no unit (cm or inches?)' });
+  });
+});
+
+describe("a weight without a unit", () => {
+  it("is read in the column's unit when that unit is clearly the column's and the number fits its range", () => {
+    // Seen on a 10,000-row sheet: mostly kg, some g and lbs, and 503 bare numbers
+    const column = ["1.8 kg", "0.9 kg", "2,4 kg", "0.3 kg", "1.1 kg", "1.7", "800", "850 g", "2.2 lbs", null];
+    const guess = detectWeightUnit(column);
+    expect(guess).toEqual({ unit: "kg", min: 0.3, max: 2.4 });
+    expect(weightUnitFor("1.7", guess)).toBe("kg");
+    expect(weightUnitFor("800", guess)).toBeNull();
+    expect(weightUnitFor("1.7 kg", guess)).toBeNull();
+  });
+
+  it("isn't guessed when no unit is clearly the column's", () => {
+    expect(detectWeightUnit(["1 kg", "2 kg", "2 lbs", "3 lbs", "1.5"])).toBeNull();
+    expect(detectWeightUnit(["1.5", "2"])).toBeNull();
   });
 });

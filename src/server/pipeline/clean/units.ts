@@ -41,6 +41,41 @@ export function parseWeight(raw: string | null | undefined, unitHint?: string): 
   return { ok: true, grams };
 }
 
+// The unit most of a weight column uses, and the range of its values (in that unit)
+export type WeightUnitGuess = { unit: string; min: number; max: number };
+
+const BARE_NUMBER = /^(\d+(?:[.,]\d+)?)$/;
+const WITH_UNIT = /^(\d+(?:[.,]\d+)?)\s*([a-z]+)\.?$/;
+
+// Suppliers drop the unit on a few rows of a column that otherwise has one. When one unit is clearly the column's
+// (at least 60% of the weights that have a unit) a bare number inside the range of its values is read in that unit:
+// next to "1.8 kg" and "0.9 kg", "1.7" is kg. "800" in the same column isn't (outside the range), and with kg and
+// lbs mixed half and half nothing is guessed. Seen on a 10,000-row sheet: 503 weights without a unit
+export function detectWeightUnit(values: (string | null | undefined)[]): WeightUnitGuess | null {
+  const byFactor = new Map<number, { unit: string; numbers: number[] }>();
+  let withUnit = 0;
+  for (const value of values) {
+    const match = cleanText(value)?.toLowerCase().match(WITH_UNIT);
+    const factor = match && GRAMS_PER[match[2]];
+    if (!match || !factor) continue;
+    withUnit++;
+    const entry = byFactor.get(factor) ?? { unit: match[2], numbers: [] };
+    entry.numbers.push(toNumber(match[1]));
+    byFactor.set(factor, entry);
+  }
+  const top = [...byFactor.values()].sort((a, b) => b.numbers.length - a.numbers.length)[0];
+  if (!top || top.numbers.length < withUnit * 0.6) return null;
+  return { unit: top.unit, min: Math.min(...top.numbers), max: Math.max(...top.numbers) };
+}
+
+// The unit for a weight written without one, when the column's own unit fits it (see detectWeightUnit)
+export function weightUnitFor(raw: string | null | undefined, guess: WeightUnitGuess | null): string | null {
+  const match = guess && cleanText(raw)?.match(BARE_NUMBER);
+  if (!match) return null;
+  const number = toNumber(match[1]);
+  return number >= guess.min && number <= guess.max ? guess.unit : null;
+}
+
 export type SizeResult = {
   // What the merchant and shopper see, e.g. "20.3 cm", "100 m"
   text: string;
