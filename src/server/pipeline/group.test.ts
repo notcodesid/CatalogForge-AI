@@ -50,6 +50,45 @@ describe("groupRows", () => {
     expect(result.flatMap((r) => r.issues)).toEqual([]);
   });
 
+  it("puts a row without a parent into the family its SKU starts with, when the name is the same", () => {
+    // Seen on a 10,000-row sheet: the 4 sizes of FXBB-03493 became three "Bamboo Bowl" products
+    const result = groupRows(
+      [
+        row(15, { sku: "FXBB-03493-15", title: "Bamboo Bowl", size: "15 cm" }),
+        row(102, { sku: "FXBB-03493-40", parentSku: "FXBB-03493", title: "Bamboo Bowl", size: "40 cm" }),
+        row(7248, { sku: "FXBB-03493-10", parentSku: "FXBB-03493", title: "Bamboo Bowl", size: "10 cm" }),
+        row(7987, { sku: "FXBB-03493-30", title: "Bamboo Bowl", size: "30 cm" }),
+        // Starts with a parent but is another product: stays on its own
+        row(20, { sku: "BW-SET", title: "Bamboo Bowl Set" }),
+        row(21, { sku: "BW-1", parentSku: "BW", title: "Wooden Bowl" }),
+      ],
+      withParentColumn,
+    );
+    expect(result.map((r) => r.productKey)).toEqual(["parent:fxbb-03493", "parent:fxbb-03493", "parent:fxbb-03493", "parent:fxbb-03493", "sku:bw-set", "parent:bw"]);
+    // The merchant can see why
+    expect(result[0].issues).toEqual([{ field: "sku", severity: "info", message: "No Parent SKU: joined FXBB-03493, because the SKU starts with it and the name is the same" }]);
+    expect(result[4].issues).toEqual([]);
+  });
+
+  it("groups rows that all lack a parent when their SKUs share a start and the names match", () => {
+    // Seen on a 2,000-row sheet: both sizes of FYCN-00253 had no Parent SKU and became two "Soy Candle" products
+    const result = groupRows(
+      [
+        row(2, { sku: "FYCN-00253-10", title: "Soy Candle", size: "10 cm" }),
+        row(3, { sku: "FYCN-00253-25", title: "Soy Candle", size: "25 cm" }),
+        // Same start, another name: a product of its own (even "Large", which nameKey would drop). A lone row too
+        row(4, { sku: "FYCN-00253-XL", title: "Soy Candle Large" }),
+        row(5, { sku: "DM-001-40", title: "Doormat" }),
+        row(6, { sku: "PS-1-40", parentSku: "PS-1", title: "Plant Stand" }),
+      ],
+      withParentColumn,
+    );
+    expect(result.map((r) => r.productKey)).toEqual(["parent:fycn-00253", "parent:fycn-00253", "sku:fycn-00253-xl", "sku:dm-001-40", "parent:ps-1"]);
+    expect(result[0].issues).toEqual([
+      { field: "sku", severity: "info", message: "No Parent SKU: grouped with the other rows whose SKU starts with FYCN-00253- and that have the same name" },
+    ]);
+  });
+
   it("merges an exact duplicate row, and treats SKUs that differ only in case as the same", () => {
     const [first, second] = groupRows([row(2, { sku: "A-1", title: "Mug" }), row(6, { sku: "a-1", title: "Mug" })], noParentColumn);
     expect(first.duplicateOfRow).toBeUndefined();

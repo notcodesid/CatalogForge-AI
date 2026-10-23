@@ -99,21 +99,75 @@ function sizeKey(row: CleanedRow) {
 const sameValue = (a: CleanedRow, b: CleanedRow, field: keyof CleanedRow) =>
   field === "size" ? sizeKey(a) === sizeKey(b) : describe(a, field) === describe(b, field);
 
+// Suppliers often leave the Parent SKU out on some rows of a family. A row without one whose own SKU is another
+// row's parent plus a dash and more ("FXBB-03493-15" next to rows with parent "FXBB-03493"), with the same name, is
+// one of that family. Seen on a 10,000-row sheet: 876 such rows made 875 extra products, three "Bamboo Bowl"s in a
+// row. The name must match, so a "BW-SET" doesn't join a different product whose parent is "BW". When every row of a
+// family lacks the parent, rows with exactly the same name whose SKUs only differ after the last dash
+// ("FYCN-00253-10" and "FYCN-00253-25", both "Soy Candle") are one product too. Returns the parent SKU (as the sheet writes it, or the
+// shared start of the SKUs) a row goes under, if any
+function parentFamilies(rows: GroupInput[], options: GroupOptions): (row: CleanedRow) => { parent: string; joined: boolean } | undefined {
+  if (!options.hasParentColumn) return () => undefined;
+  const families = new Map<string, { parent: string; names: Set<string> }>();
+  for (const { cleaned: c } of rows) {
+    if (!c.parentSku) continue;
+    const family = families.get(skuKey(c.parentSku)) ?? { parent: c.parentSku, names: new Set<string>() };
+    family.names.add(nameKey(c.title ?? ""));
+    families.set(skuKey(c.parentSku), family);
+  }
+  const joined = (c: CleanedRow) => {
+    const sku = skuKey(c.sku!);
+    // The longest parent first: "AB-1-2-3" joins "AB-1-2" before "AB-1"
+    for (let dash = sku.lastIndexOf("-"); dash > 0; dash = sku.lastIndexOf("-", dash - 1)) {
+      const family = families.get(sku.slice(0, dash));
+      if (family && (!c.title || family.names.has(nameKey(c.title)))) return family.parent;
+    }
+    return undefined;
+  };
+  // The rows left without a family, by the start of their SKU and their name
+  const stemOf = (c: CleanedRow) => {
+    const dash = c.sku!.lastIndexOf("-");
+    return dash > 0 ? c.sku!.slice(0, dash) : null;
+  };
+  const siblings = new Map<string, number>();
+  // The exact name, not nameKey: "Glazed Vase" and "Glazed Vase Large" may well be two products
+  const stemKey = (c: CleanedRow, stem: string) => `${skuKey(stem)}|${(c.title ?? "").trim().toLowerCase()}`;
+  for (const { cleaned: c } of rows) {
+    if (c.parentSku || !c.sku || !c.title || joined(c)) continue;
+    const stem = stemOf(c);
+    if (stem) siblings.set(stemKey(c, stem), (siblings.get(stemKey(c, stem)) ?? 0) + 1);
+  }
+  return (c) => {
+    if (c.parentSku || !c.sku) return undefined;
+    const parent = joined(c);
+    if (parent) return { parent, joined: true };
+    const stem = c.title ? stemOf(c) : null;
+    return stem && (siblings.get(stemKey(c, stem)) ?? 0) > 1 ? { parent: stem, joined: false } : undefined;
+  };
+}
+
 // Puts rows that belong to the same product together and finds duplicates and conflicts.
 // Works on the whole sheet at once, so row order doesn't matter
 export function groupRows(rows: GroupInput[], options: GroupOptions): GroupResult[] {
   const results = new Map<number, GroupResult>();
   const groups = new Map<string, { rows: GroupInput[]; byName: boolean }>();
+  const familyOf = parentFamilies(rows, options);
+  const addIssue = (rowNumber: number, issue: Issue) => results.get(rowNumber)!.issues.push(issue);
 
   for (const row of rows) {
-    const { key, byName } = productKeyFor(row.cleaned, options);
+    const family = familyOf(row.cleaned);
+    const { key, byName } = family ? { key: `parent:${skuKey(family.parent)}`, byName: false } : productKeyFor(row.cleaned, options);
     results.set(row.rowNumber, { rowNumber: row.rowNumber, productKey: key, issues: [] });
+    if (family) {
+      const message = family.joined
+        ? `No Parent SKU: joined ${family.parent}, because the SKU starts with it and the name is the same`
+        : `No Parent SKU: grouped with the other rows whose SKU starts with ${family.parent}- and that have the same name`;
+      addIssue(row.rowNumber, { field: "sku", severity: "info", message });
+    }
     const group = groups.get(key) ?? { rows: [], byName };
     group.rows.push(row);
     groups.set(key, group);
   }
-
-  const addIssue = (rowNumber: number, issue: Issue) => results.get(rowNumber)!.issues.push(issue);
 
   for (const group of groups.values()) {
     // Product-info rows and photo rows belong to the product but aren't variants
