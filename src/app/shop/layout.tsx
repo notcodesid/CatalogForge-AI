@@ -1,6 +1,6 @@
 // What a shopper sees depends on their country (switcher link, cookie, or the country their IP is in), and an
-// unknown product must answer with a real 404, which only works before a page starts streaming. So shop pages
-// read the request first and render in one go, without a prerendered shell. They stay fast because every
+// unknown product must answer with a real 404, which only works before a page starts streaming (see
+// [handle]/page.tsx). So shop pages render in one go, without a loading skeleton. They stay fast because every
 // database read is cached for a minute (src/server/storefront/cached.ts): a big import writing rows doesn't slow
 // shoppers down, and the AI is never called
 export const instant = false;

@@ -9,13 +9,25 @@ import { ShopHeader } from "../_components/shop-header";
 import { VariantPicker } from "../_components/variant-picker";
 import { shopHref, shopperContext } from "../_lib/shopper";
 
-// Rendered per request from cached data: the shopper's country decides the language, and an unknown product
-// answers with a real 404 (see ../layout.tsx). Each page opts out of the instant-navigation check itself
+// Rendered per request from cached data: the shopper's country decides the language (see ../layout.tsx). Each
+// page opts out of the instant-navigation check itself
 export const instant = false;
 
+// A product that doesn't exist, isn't approved or was deleted must answer with a real 404. By default the build
+// makes one shared shell for every handle, and the production server sends it with a 200 before this page runs,
+// so a 404 found afterwards can only show the not-found page. "blocking" turns that shell off: the first request
+// for a handle waits for the page's own product check (in load below), and Next.js keeps the answer, the 404
+// included, until the storefront's cached data is refreshed. Not in the Next.js docs yet (hence "unstable_"): if
+// an upgrade drops it, product pages still work but unknown ones go back to a 200
+export const unstable_paramMatching = { handle: "blocking" };
+
 async function load(props: PageProps<"/shop/[handle]">) {
-  const [{ handle }, searchParams] = await Promise.all([props.params, props.searchParams]);
-  const shopper = await shopperContext(searchParams);
+  const { handle } = await props.params;
+  // Before the shopper's cookies and headers are read: whether a product is on sale is the same for everyone, so
+  // this check is part of what Next.js renders once per handle and keeps. English is every product's own text and
+  // what most shoppers read, so this is usually the same cached read as the one below
+  if (!(await shopProduct(handle, "en"))) notFound();
+  const shopper = await shopperContext(await props.searchParams);
   return { handle, shopper, product: await shopProduct(handle, shopper.language) };
 }
 
@@ -45,7 +57,8 @@ export async function generateMetadata(props: PageProps<"/shop/[handle]">): Prom
 
 export default async function ProductPage(props: PageProps<"/shop/[handle]">) {
   const { handle, shopper, product } = await load(props);
-  // Before anything streams, so the answer really is a 404 (not approved, deleted, or never existed)
+  // Only when the two cached reads in load disagree for a moment (the product just went on or off sale): the
+  // not-found page still shows (and isn't indexed), but by now the response has started, so it stays a 200
   if (!product) notFound();
   const { text } = shopper;
   const price = (cents: number | null, currency: string | null) => (cents !== null && currency ? formatPrice(cents, currency, shopper.locale) : text.priceOnRequest);
