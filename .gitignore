@@ -52,3 +52,6 @@ next-env.d.ts
 # uploaded files (local storage)
 /storage
 /.storage-test*
+
+# AI coding tool skills that CLIs (Vercel, Neon) drop into the project
+/.agents
